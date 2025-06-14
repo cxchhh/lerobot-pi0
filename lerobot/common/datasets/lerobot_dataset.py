@@ -745,7 +745,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 item[cam] = self.image_transforms(item[cam])
 
         # Add task as a string
-        task_idx = item["task_index"].item()
+        item["task_index"] = torch.tensor(0).to(item['action'].device)
+        task_idx = item["task_index"].item() # no index
         item["task"] = self.meta.tasks[task_idx]
 
         return item

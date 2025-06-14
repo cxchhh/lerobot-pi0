@@ -77,7 +77,7 @@ def flex_attention_forward(
         if causal_mask.shape[1] == 1 and query_states.shape[1] > 1:
             causal_mask = causal_mask.expand(-1, query_states.shape[1], -1, -1)
 
-    def precomputed_mask_factory(precomputed_mask: torch.Tensor) -> _mask_mod_signature:
+    def precomputed_mask_factory(precomputed_mask: torch.Tensor):
         def mask_mod(b, h, q_idx, kv_idx):
             # Danger zone: if b,h,q_idx,kv_idx exceed the shape, device-side assert occurs.
             return precomputed_mask[b][h][q_idx][kv_idx]

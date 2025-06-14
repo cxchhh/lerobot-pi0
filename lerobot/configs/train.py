@@ -54,7 +54,7 @@ class TrainPipelineConfig(HubMixin):
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
-    log_freq: int = 200
+    log_freq: int = 100
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
@@ -87,7 +87,7 @@ class TrainPipelineConfig(HubMixin):
                     f"{config_path=} is expected to be a local path. "
                     "Resuming from the hub is not supported for now."
                 )
-            policy_path = Path(config_path).parent
+            policy_path = Path(config_path)
             self.policy.pretrained_path = policy_path
             self.checkpoint_path = policy_path.parent
 
