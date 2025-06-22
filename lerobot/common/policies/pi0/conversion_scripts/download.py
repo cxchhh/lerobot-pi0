@@ -331,4 +331,3 @@ def _should_invalidate_cache(cache_dir: pathlib.Path, local_path: pathlib.Path) 
 
 if __name__ == "__main__":
     checkpoint_dir = maybe_download("s3://openpi-assets/checkpoints/pi0_base")
-    breakpoint()

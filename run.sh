@@ -1,10 +1,10 @@
-NUM_GPUS=4
+NUM_GPUS=1
 
 torchrun \
   --nproc_per_node=$NUM_GPUS \
   lerobot/scripts/train_ddp.py \
-  --dataset.repo_id=unitree/example_repo_1 \
-  --dataset.root=$HOME/.cache/huggingface/lerobot/unitree/example_repo_1 \
+  --dataset.repo_id=lerobot/example_repo_0 \
+  --dataset.root=/mnt/kpfs/danshili/Workspace/lerobot/storage/data/lerobot/example_repo_0 \
   --wandb.enable=true \
   --policy.path=$HOME/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch \
   # --resume=true \
