@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import itertools
 import logging
 import os
 import time
@@ -11,6 +12,8 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.amp import GradScaler
+from torch.utils.data import random_split, DataLoader
+import tqdm
 
 from lerobot.common.datasets.factory import make_dataset
 from lerobot.common.datasets.utils import cycle
@@ -83,6 +86,35 @@ def sanitize_for_wandb(log_dict):
             pass  # 忽略不支持的
     return safe_dict
 
+def eval_on_val_dataset(cfg, model, val_dataset, device, max_batches=10):
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+
+    val_loader = DataLoader(
+            val_dataset,
+            batch_size=cfg.batch_size,
+            shuffle=True,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+            drop_last=False
+        )
+
+    limited_loader = itertools.islice(val_loader, max_batches)
+    for batch in tqdm.tqdm(limited_loader, total=max_batches):
+        batch={
+            key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
+            for key, value in batch.items()
+        }
+
+        with torch.no_grad():
+            loss, output_dict = model.forward(batch) 
+
+        total_loss += loss.item()
+        total_samples += 1
+
+    avg_loss = total_loss / total_samples
+    return {"val_loss": avg_loss}
 
 def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     setup_ddp(rank, world_size)
@@ -91,6 +123,9 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
 
     if cfg.seed is not None:
         set_seed(cfg.seed + rank)
+        generator = torch.Generator().manual_seed(cfg.seed + rank)
+    else:
+        generator = None
 
     device = torch.device(f"cuda:{rank}")
     torch.backends.cudnn.benchmark = True
@@ -98,6 +133,9 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     cfg.policy.device = f"cuda:{rank}"
 
     dataset = make_dataset(cfg)
+    train_size = int(0.95 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator)
     
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None and rank == 0:
@@ -108,16 +146,16 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     policy.to(device)
     policy = DDP(policy, device_ids=[rank])
 
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        sampler=sampler,
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        sampler=train_sampler,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
         pin_memory=True,
         drop_last=False
     )
-    dl_iter = cycle(dataloader)
+    dl_iter = cycle(train_loader)
 
     optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy.module)
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
@@ -142,7 +180,7 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
 
     for _ in range(step, cfg.steps):
         # breakpoint()
-        sampler.set_epoch(step)
+        train_sampler.set_epoch(step)
         start_time = time.perf_counter()
         batch = next(dl_iter)
         train_tracker.dataloading_s = time.perf_counter() - start_time
@@ -171,38 +209,37 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
                 save_checkpoint(checkpoint_dir, step, cfg, policy.module, optimizer, lr_scheduler)
                 update_last_checkpoint(checkpoint_dir)
-                if wandb_logger:
-                    wandb_logger.log_policy(checkpoint_dir)
 
-            if cfg.env and cfg.eval_freq > 0 and step % cfg.eval_freq == 0:
-                step_id = get_step_identifier(step, cfg.steps)
+            if cfg.eval_freq > 0 and step % cfg.eval_freq == 0:
+                # step_id = get_step_identifier(step, cfg.steps)
                 with torch.no_grad():
                     with torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
-                        eval_info = eval_policy(
-                            eval_env, policy.module, cfg.eval.n_episodes,
-                            videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
-                            max_episodes_rendered=4, start_seed=cfg.seed)
+                        eval_info = eval_on_val_dataset(cfg, policy.module, val_dataset, device)
 
-                eval_metrics = {
-                    "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
-                    "pc_success": AverageMeter("success", ":.1f"),
-                    "eval_s": AverageMeter("eval_s", ":.3f"),
-                }
-                eval_tracker = MetricsTracker(cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step)
-                eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
-                eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
-                eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
-                logging.info(eval_tracker)
+                logging.info(f"[Eval] Step {step}: val_loss = {eval_info['val_loss']:.4f}")
                 if wandb_logger:
-                    wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
-                    wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                    wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
+                    wandb_logger.log_dict(eval_info, step, mode="eval")
+
+                # eval_metrics = {
+                #     "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
+                #     "pc_success": AverageMeter("success", ":.1f"),
+                #     "eval_s": AverageMeter("eval_s", ":.3f"),
+                # }
+                # eval_tracker = MetricsTracker(cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step)
+                # eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
+                # eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
+                # eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
+                # logging.info(eval_tracker)
+                # if wandb_logger:
+                #     wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
+                #     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
+                #     wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
 
     if rank == 0 and eval_env:
         eval_env.close()
     cleanup_ddp()
     if rank == 0:
-        logging.info("End of training")\
+        logging.info("End of training")
         
 @parser.wrap()
 def main(cfg: TrainPipelineConfig):

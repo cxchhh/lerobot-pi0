@@ -62,6 +62,8 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
 
     def __post_init__(self):
         self.pretrained_path = None
+        if self.device.startswith("cuda"):
+            self.device = "cuda"
         if not self.device or not is_torch_device_available(self.device):
             auto_device = auto_select_torch_device()
             logging.warning(f"Device '{self.device}' is not available. Switching to '{auto_device}'.")
@@ -172,7 +174,7 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
                 raise FileNotFoundError(
                     f"{CONFIG_NAME} not found on the HuggingFace Hub in {model_id}"
                 ) from e
-
+            
         # HACK: this is very ugly, ideally we'd like to be able to do that natively with draccus
         # something like --policy.path (in addition to --policy.type)
         cli_overrides = policy_kwargs.pop("cli_overrides", [])

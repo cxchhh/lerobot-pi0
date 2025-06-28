@@ -72,6 +72,8 @@ class PaliGemmaWithExpertConfig(PretrainedConfig):
         self.freeze_vision_encoder = freeze_vision_encoder
         self.train_expert_only = train_expert_only
         self.attention_implementation = attention_implementation
+        if not freeze_vision_encoder:
+            print("finetuning vision encoder")
 
         if paligemma_config is None:
             # Default config from Pi0
