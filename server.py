@@ -14,7 +14,6 @@ from gx_infer.websocket_policy_server import WebsocketPolicyServer
 
 from lerobot.common.datasets.factory import IMAGENET_STATS
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
-from lerobot.common.datasets.transforms import ImageTransforms
 from lerobot.common.policies.factory import make_policy
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.utils.random_utils import set_seed
