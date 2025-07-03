@@ -176,7 +176,7 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
         "update_s": AverageMeter("updt_s", ":.3f"),
         "dataloading_s": AverageMeter("data_s", ":.3f"),
     }
-    train_tracker = MetricsTracker(cfg.batch_size, dataset.num_frames, dataset.num_episodes, train_metrics, initial_step=step)
+    train_tracker = MetricsTracker(cfg.batch_size * world_size, dataset.num_frames, dataset.num_episodes, train_metrics, initial_step=step)
 
     for _ in range(step, cfg.steps):
         # breakpoint()

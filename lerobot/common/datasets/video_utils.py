@@ -62,7 +62,10 @@ def decode_video_frames(
     if backend is None:
         backend = get_safe_default_codec()
     if backend == "torchcodec":
-        return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+        try:
+            return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+        except Exception as e:
+            print("error decoding", video_path)
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:

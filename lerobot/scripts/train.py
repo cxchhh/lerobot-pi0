@@ -19,6 +19,7 @@ from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
 
+import numpy as np
 import torch
 from termcolor import colored
 from torch.amp import GradScaler
@@ -52,6 +53,23 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.eval import eval_policy
 
+def sanitize_for_wandb(log_dict):
+    safe_dict = {}
+    for k, v in log_dict.items():
+        try:
+            # 尝试只保留 wandb 支持的基本类型
+            if isinstance(v, (int, float, bool, str)):
+                safe_dict[k] = v
+            elif isinstance(v, torch.Tensor) and v.numel() == 1:
+                safe_dict[k] = v.item()
+            elif isinstance(v, torch.Tensor):
+                continue  # 跳过多维 Tensor，避免 warning
+            elif isinstance(v, (list, np.ndarray)) and np.array(v).ndim <= 2:
+                safe_dict[k] = v
+            # 你也可以加其他允许类型判断
+        except:
+            pass  # 忽略不支持的
+    return safe_dict
 
 def update_policy(
     train_metrics: MetricsTracker,
@@ -233,7 +251,7 @@ def train(cfg: TrainPipelineConfig):
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
-                    wandb_log_dict.update(output_dict)
+                    wandb_log_dict.update(sanitize_for_wandb(output_dict))
                 wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
 
@@ -242,8 +260,8 @@ def train(cfg: TrainPipelineConfig):
             checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
             save_checkpoint(checkpoint_dir, step, cfg, policy, optimizer, lr_scheduler)
             update_last_checkpoint(checkpoint_dir)
-            if wandb_logger:
-                wandb_logger.log_policy(checkpoint_dir)
+            # if wandb_logger:
+            #     wandb_logger.log_policy(checkpoint_dir)
 
         if cfg.env and is_eval_step:
             step_id = get_step_identifier(step, cfg.steps)

@@ -62,7 +62,7 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
 
     def __post_init__(self):
         self.pretrained_path = None
-        if self.device.startswith("cuda"):
+        if self.device is not None and self.device.startswith("cuda"):
             self.device = "cuda"
         if not self.device or not is_torch_device_available(self.device):
             auto_device = auto_select_torch_device()
