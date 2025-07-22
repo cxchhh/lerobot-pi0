@@ -14,6 +14,8 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.amp import GradScaler
 from torch.utils.data import random_split, DataLoader
 import tqdm
+import swanlab
+swanlab.sync_wandb(wandb_run=False)
 
 from lerobot.common.datasets.factory import make_dataset
 from lerobot.common.datasets.utils import cycle
@@ -36,8 +38,6 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.eval import eval_policy
 
 def setup_ddp(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "29500"
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
@@ -141,7 +141,7 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     if cfg.eval_freq > 0 and cfg.env is not None and rank == 0:
         eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
 
-    print(rank, "make policy")
+    print(rank, "load policy into", device)
     policy = make_policy(cfg=cfg.policy, ds_meta=dataset.meta)
     policy.to(device)
     policy = DDP(policy, device_ids=[rank])
@@ -219,21 +219,6 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
                 logging.info(f"[Eval] Step {step}: val_loss = {eval_info['val_loss']:.4f}")
                 if wandb_logger:
                     wandb_logger.log_dict(eval_info, step, mode="eval")
-
-                # eval_metrics = {
-                #     "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
-                #     "pc_success": AverageMeter("success", ":.1f"),
-                #     "eval_s": AverageMeter("eval_s", ":.3f"),
-                # }
-                # eval_tracker = MetricsTracker(cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step)
-                # eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
-                # eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
-                # eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
-                # logging.info(eval_tracker)
-                # if wandb_logger:
-                #     wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
-                #     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                #     wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
 
     if rank == 0 and eval_env:
         eval_env.close()

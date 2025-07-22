@@ -248,7 +248,7 @@ class PI0Policy(PreTrainedPolicy):
             config.output_features, config.normalization_mapping, dataset_stats
         )
 
-        self.language_tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
+        self.language_tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224", local_files_only=True)
         self.model = PI0FlowMatching(config)
 
         self.reset()
@@ -304,7 +304,7 @@ class PI0Policy(PreTrainedPolicy):
     def get_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         """Select a single action given environment observations.
 
-        This method wraps `select_actions` in order to return one action at a time for execution in the
+        This method wraps `select_actions` in order to return full action chunking for execution in the
         environment. It works by managing the actions in a queue and only calling `select_actions` when the
         queue is empty.
         """

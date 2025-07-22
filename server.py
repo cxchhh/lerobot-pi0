@@ -21,7 +21,7 @@ from lerobot.common.utils.utils import init_logging
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 
-HOST = "localhost"
+HOST = "0.0.0.0"
 PORT = "8001"
 
 def process_img(img):
@@ -40,12 +40,11 @@ class ServerPolicy(_base_policy.BasePolicy):
 
     def infer(self, obs_dict: Dict) -> Dict:
         qpos = obs_dict['observation.state']
-        head_image = obs_dict['observation.images.head']
-        wrist_image = obs_dict['observation.images.right_wrist']
         observation = dict()
         observation['observation.state'] = torch.tensor(np.array(qpos)).unsqueeze(0).float().to(self.device)
-        observation['observation.images.head'] = process_img(np.array(head_image)).to(self.device)
-        observation['observation.images.right_wrist'] = process_img(np.array(wrist_image)).to(self.device)
+        for key in obs_dict:
+            if "images" in key:
+                observation[key] = process_img(np.array(obs_dict[key])).to(self.device)
         observation['task'] = [obs_dict['task']]
         observation["task_index"] = torch.tensor(0).unsqueeze(0).to(self.device)
 
@@ -53,8 +52,8 @@ class ServerPolicy(_base_policy.BasePolicy):
             self.model.reset()
 
         action = self.model.get_action_chunk(observation).cpu().numpy()
-        # print(action)
-        return {"action": action }
+        print(action)
+        return {"actions": action }
 
 @parser.wrap()
 def main_wrapper(cfg: TrainPipelineConfig):
@@ -71,10 +70,6 @@ def main_wrapper(cfg: TrainPipelineConfig):
     ds_meta = LeRobotDatasetMetadata(
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
-    if cfg.dataset.use_imagenet_stats:
-        for key in ds_meta.camera_keys:
-            for stats_type, stats in IMAGENET_STATS.items():
-                ds_meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
 
     # load policy
     logging.info("Making policy.")

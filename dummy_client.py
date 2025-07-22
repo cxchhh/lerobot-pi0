@@ -30,8 +30,8 @@ class DummyAgent:
 
         obs_dict = {
             "observation.state": obs_state,
-            "observation.images.head": obs_img_head,
-            "observation.images.right_wrist": obs_img_right_wrist,
+            "observation.images.cam_head": obs_img_head,
+            "observation.images.cam_right_wrist": obs_img_right_wrist,
             "task": "pick up NaiLong and lift it up.",
             "reset": 0
         }
@@ -41,10 +41,10 @@ class DummyAgent:
 @dataclass
 class Args:
     host: str = "localhost"
-    port: int = 8000
+    port: int = 8001
 
     max_hz = 1
-    action_horizon: int = 3
+    action_horizon: int = 5
 
     num_episodes: int = 1
     max_episode_steps: int = 30

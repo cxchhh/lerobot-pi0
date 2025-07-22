@@ -17,6 +17,7 @@ import contextlib
 import logging
 import shutil
 from pathlib import Path
+import traceback
 from typing import Callable
 
 import datasets
@@ -93,6 +94,7 @@ class LeRobotDatasetMetadata:
                 raise FileNotFoundError
             self.load_metadata()
         except (FileNotFoundError, NotADirectoryError):
+            traceback.print_exec()
             if is_valid_version(self.revision):
                 self.revision = get_safe_version(self.repo_id, self.revision)
 

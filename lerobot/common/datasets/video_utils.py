@@ -16,6 +16,7 @@
 import glob
 import importlib
 import logging
+import traceback
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,7 @@ def decode_video_frames(
         try:
             return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
         except Exception as e:
+            traceback.print_exc()
             print("error decoding", video_path)
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)

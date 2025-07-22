@@ -177,3 +177,7 @@ cython_debug/
 sim/
 *.mp4
 *.tar.gz
+*.zip
+*.7z
+
+run*.sh
