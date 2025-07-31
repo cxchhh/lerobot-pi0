@@ -25,6 +25,7 @@ from lerobot.common.envs.utils import env_to_policy_features
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
+from lerobot.common.policies.pi0_multi.configuration_pi0_multi import PI0MultiConfig
 from lerobot.common.policies.pi0fast.configuration_pi0fast import PI0FASTConfig
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.policies.sac.configuration_sac import SACConfig
@@ -58,6 +59,10 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
         from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
 
         return PI0Policy
+    elif name == "pi0_multi":
+        from lerobot.common.policies.pi0_multi.modeling_pi0_multi import PI0MultiPolicy
+
+        return PI0MultiPolicy
     elif name == "pi0fast":
         from lerobot.common.policies.pi0fast.modeling_pi0fast import PI0FASTPolicy
 

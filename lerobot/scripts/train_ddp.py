@@ -142,6 +142,7 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
         eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
 
     print(rank, "load policy into", device)
+    print(cfg.policy)
     policy = make_policy(cfg=cfg.policy, ds_meta=dataset.meta)
     policy.to(device)
     policy = DDP(policy, device_ids=[rank])

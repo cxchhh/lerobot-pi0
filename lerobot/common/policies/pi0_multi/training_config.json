@@ -1,0 +1,38 @@
+{
+  "policy": {
+    "type": "pi0_multi",
+    "path": null
+  },
+  "dataset": {
+    "repo_id": "sim-v3.2-MoveGrasp-multi",
+    "delta_timestamps": {
+      "observation.images.head": [
+        -0.4,
+        -0.3,
+        -0.2,
+        -0.1,
+        0.0
+      ],
+      "observation.images.right_wrist": [
+        -0.4,
+        -0.3,
+        -0.2,
+        -0.1,
+        0.0
+      ],
+      "observation.state": [
+        -0.4,
+        -0.3,
+        -0.2,
+        -0.1,
+        0.0
+      ]
+    }
+  },
+  "training": {
+    "num_epochs": 100,
+    "batch_size": 16,
+    "learning_rate": 2.5e-05,
+    "gradient_accumulation_steps": 2
+  }
+}
