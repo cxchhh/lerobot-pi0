@@ -1,8 +1,7 @@
 NUM_GPUS=4
 export MASTER_ADDR="localhost"
-export MASTER_PORT="29503"
-export ID=grasp_ycb_box_fixurdf
-
+export MASTER_PORT="29504"
+export ID=grasp_ycb_box_broader
 torchrun \
   --nproc_per_node=$NUM_GPUS \
   --master_port=$MASTER_PORT \

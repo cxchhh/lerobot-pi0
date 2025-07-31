@@ -88,7 +88,7 @@ def compute_episode_stats(episode_data: dict[str, list[str] | np.ndarray], featu
         if features[key]["dtype"] == "string":
             continue  # HACK: we should receive np.arrays of strings
         elif features[key]["dtype"] in ["image", "video"]:
-            ep_ft_array = sample_images(data)  # data is a list of image paths
+            ep_ft_array = np.array(data[:10]).transpose(0, 3, 1, 2)  # data is a list of image paths
             axes_to_reduce = (0, 2, 3)  # keep channel dim
             keepdims = True
         else:

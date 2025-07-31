@@ -69,7 +69,7 @@ from lerobot.common.datasets.utils import (
 from lerobot.common.datasets.video_utils import (
     VideoFrame,
     decode_video_frames,
-    encode_video_frames,
+    encode_video_frames_from_mem,
     get_safe_default_codec,
     get_video_info,
 )
@@ -94,7 +94,7 @@ class LeRobotDatasetMetadata:
                 raise FileNotFoundError
             self.load_metadata()
         except (FileNotFoundError, NotADirectoryError):
-            traceback.print_exec()
+            traceback.print_exc()
             if is_valid_version(self.revision):
                 self.revision = get_safe_version(self.repo_id, self.revision)
 
@@ -800,16 +800,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
                     f"An element of the frame is not in the features. '{key}' not in '{self.features.keys()}'."
                 )
 
-            if self.features[key]["dtype"] in ["image", "video"]:
-                img_path = self._get_image_file_path(
-                    episode_index=self.episode_buffer["episode_index"], image_key=key, frame_index=frame_index
-                )
-                if frame_index == 0:
-                    img_path.parent.mkdir(parents=True, exist_ok=True)
-                self._save_image(frame[key], img_path)
-                self.episode_buffer[key].append(str(img_path))
-            else:
-                self.episode_buffer[key].append(frame[key])
+            # if self.features[key]["dtype"] in ["image", "video"]:
+            #     img_path = self._get_image_file_path(
+            #         episode_index=self.episode_buffer["episode_index"], image_key=key, frame_index=frame_index
+            #     )
+            #     if frame_index == 0:
+            #         img_path.parent.mkdir(parents=True, exist_ok=True)
+            #     self._save_image(frame[key], img_path)
+            #     self.episode_buffer[key].append(str(img_path))
+            # else:
+            self.episode_buffer[key].append(frame[key])
 
         self.episode_buffer["size"] += 1
 
@@ -958,10 +958,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
             if video_path.is_file():
                 # Skip if video is already encoded. Could be the case when resuming data recording.
                 continue
-            img_dir = self._get_image_file_path(
-                episode_index=episode_index, image_key=key, frame_index=0
-            ).parent
-            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+            # breakpoint()
+            # img_dir = self._get_image_file_path(
+            #     episode_index=episode_index, image_key=key, frame_index=0
+            # ).parent
+            encode_video_frames_from_mem(self.episode_buffer[key], video_path, self.fps, overwrite=True)
 
         return video_paths
 
