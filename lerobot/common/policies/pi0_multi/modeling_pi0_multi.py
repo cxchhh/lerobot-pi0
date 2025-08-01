@@ -52,6 +52,7 @@ policy = Pi0Policy.from_pretrained("lerobot/pi0")
 import math
 from collections import deque
 
+from einops import rearrange
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
@@ -386,18 +387,22 @@ class PI0MultiPolicy(PreTrainedPolicy):
         # Preprocess image features present in the batch
         for key in present_img_keys:
             img = batch[key]
+            bsize = img.shape[0]
 
             if self.config.resize_imgs_with_padding is not None:
+                img = rearrange(img, "b t c h w -> (b t) c h w")
                 img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0)
+                img = rearrange(img, "(b t) c h w -> b t c h w", b=bsize)
 
             # Normalize from range [0,1] to [-1,1] as expected by siglip
             img = img * 2.0 - 1.0
 
             bsize = img.shape[0]
             device = img.device
-            mask = torch.ones(bsize, dtype=torch.bool, device=device)
-            images.append(img)
-            img_masks.append(mask)
+            for obs_step in range(img.shape[1]):
+                mask = torch.ones(bsize, dtype=torch.bool, device=device)
+                images.append(img[:, obs_step, ...])
+                img_masks.append(mask)
 
         # Create image features not present in the batch
         # as fully 0 padded images.
@@ -597,16 +602,16 @@ class PI0FlowMatching(nn.Module):
         # Embed state
         state_emb = self.state_proj(state)
         state_emb = state_emb.to(dtype=torch.bfloat16)
-        embs.append(state_emb[:, None, :])
+        embs.append(state_emb)
         bsize = state_emb.shape[0]
         dtype = state_emb.dtype
         device = state_emb.device
 
-        state_mask = torch.ones(bsize, 1, dtype=torch.bool, device=device)
+        state_mask = torch.ones(*state_emb.shape[:2], dtype=torch.bool, device=device)
         pad_masks.append(state_mask)
 
         # Set attention masks so that image and language inputs do not attend to state or actions
-        att_masks += [1]
+        att_masks += [1] * state_emb.shape[1]
 
         # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = create_sinusoidal_pos_embedding(

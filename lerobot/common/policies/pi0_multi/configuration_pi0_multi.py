@@ -47,7 +47,7 @@ class PI0MultiConfig(PreTrainedConfig):
 
     # Add empty images. Used by pi0_aloha_sim which adds the empty
     # left and right wrist cameras in addition to the top camera.
-    empty_cameras: int = 4
+    empty_cameras: int = 0
 
     # Converts the joint and gripper values from the standard Aloha space to
     # the space used by the pi internal runtime which was used to train the base model.
@@ -138,7 +138,7 @@ class PI0MultiConfig(PreTrainedConfig):
 
     @property
     def observation_delta_indices(self) -> None:
-        return None
+        return list(range(-self.n_obs_steps+1, 1))
 
     @property
     def action_delta_indices(self) -> list:
