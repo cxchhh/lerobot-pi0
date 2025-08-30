@@ -151,7 +151,14 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 )
                 model.to(map_location)
         else:
-            safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
+            # safetensors.torch.load_model(model, model_file, strict=False, device=map_location)
+
+            state_dict = safetensors.torch.load_file(model_file, device=map_location)
+            # 过滤掉不匹配的参数
+            model_dict = model.state_dict()
+            filtered = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
+            # 覆盖加载
+            model.load_state_dict(filtered, strict=False)
         return model
 
     # def generate_model_card(self, *args, **kwargs) -> ModelCard:

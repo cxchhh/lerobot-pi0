@@ -83,6 +83,7 @@ def main_wrapper(cfg: TrainPipelineConfig):
     policy_server = WebsocketPolicyServer(policy=policy, host=HOST, port=PORT)
     print(f"Starting server on {HOST}:{PORT}")
     policy_server.serve_forever()
+    
 
 
 if __name__ == '__main__':
