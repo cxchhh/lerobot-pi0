@@ -52,7 +52,7 @@ class ServerPolicy(_base_policy.BasePolicy):
             self.model.reset()
 
         action = self.model.get_action_chunk(observation).cpu().numpy()
-        print(action)
+        print(action.shape, action)
         return {"actions": action }
 
 @parser.wrap()
@@ -83,6 +83,7 @@ def main_wrapper(cfg: TrainPipelineConfig):
     policy_server = WebsocketPolicyServer(policy=policy, host=HOST, port=PORT)
     print(f"Starting server on {HOST}:{PORT}")
     policy_server.serve_forever()
+    
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 NUM_GPUS=4
 export MASTER_ADDR="localhost"
 export MASTER_PORT="29504"
-export ID=grasp_ycb_box_camera_ready
+export ID=grasp_ycb_box_camera_ready_isaacsim
 torchrun \
   --nproc_per_node=$NUM_GPUS \
   --master_port=$MASTER_PORT \
@@ -17,7 +17,7 @@ torchrun \
   # --config_path=outputs/train/2025-07-18/12-42-46_grasp_ycb_box_absolute_textured_small4/checkpoints/050000/pretrained_model \
   
  
-  
+
     
  
   
