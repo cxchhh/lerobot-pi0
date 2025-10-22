@@ -60,8 +60,8 @@ def create_stats_buffers(
 
         buffer = {}
         if norm_mode is NormalizationMode.MEAN_STD:
-            mean = torch.ones(shape, dtype=torch.float32) * torch.inf
-            std = torch.ones(shape, dtype=torch.float32) * torch.inf
+            mean = torch.zeros(shape, dtype=torch.float32) 
+            std = torch.ones(shape, dtype=torch.float32)
             buffer = nn.ParameterDict(
                 {
                     "mean": nn.Parameter(mean, requires_grad=False),

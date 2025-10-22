@@ -206,9 +206,11 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
 
     def to_bfloat16_like_physical_intelligence(self):
         self.paligemma = self.paligemma.to(dtype=torch.bfloat16)
-
+        lm = "language_model" \
+            if getattr(self.paligemma.language_model, "model", None) is None \
+            else "language_model.model"
         params_to_change_dtype = [
-            "language_model.model.layers",
+            f"{lm}.layers",
             "gemma_expert.model.layers",
             "vision_tower",
             "multi_modal",
@@ -225,6 +227,8 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
             return self.paligemma.model.get_image_features(image)
 
     def embed_language_tokens(self, tokens: torch.Tensor):
+        if getattr(self.paligemma.language_model, "model", None) is None:
+            return self.paligemma.language_model.embed_tokens(tokens)
         return self.paligemma.language_model.model.embed_tokens(tokens)
 
     # TODO: break down this huge forward into modules or functions
@@ -237,7 +241,11 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         use_cache: Optional[bool] = None,
         fill_kv_cache: Optional[bool] = None,
     ):
-        models = [self.paligemma.language_model.model, self.gemma_expert.model]
+        lm = self.paligemma.language_model \
+            if getattr(self.paligemma.language_model, "model", None) is None \
+            else self.paligemma.language_model.model
+
+        models = [lm, self.gemma_expert.model]
 
         for hidden_states in inputs_embeds:
             # TODO this is very inefficient
