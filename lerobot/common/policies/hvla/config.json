@@ -1,0 +1,19 @@
+{
+    "type": "hvla",
+    "n_obs_steps": 5,
+    "n_action_steps": 5,
+    "normalization_mapping": {
+        "VISUAL": "IDENTITY",
+        "STATE": "MEAN_STD",
+        "ACTION": "MEAN_STD"
+    },
+    "input_features": {},
+    "output_features": {},
+    "device": "cuda",
+    "use_amp": false,
+    "resize_imgs_with_padding": [
+        224,
+        224
+    ],
+    "empty_cameras": 0
+}
