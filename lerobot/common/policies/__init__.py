@@ -19,3 +19,4 @@ from .pi0_multi.configuration_pi0_multi import PI0MultiConfig as PI0MultiConfig
 from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
 from .tdmpc.configuration_tdmpc import TDMPCConfig as TDMPCConfig
 from .vqbet.configuration_vqbet import VQBeTConfig as VQBeTConfig
+from .hvla.configuration_hvla import HVLAConfig as HVLAConfig
