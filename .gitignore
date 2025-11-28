@@ -181,3 +181,5 @@ sim/
 *.7z
 
 run*.sh
+pretrained_model
+lerobot_data/

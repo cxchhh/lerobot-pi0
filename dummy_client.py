@@ -5,7 +5,7 @@ from datetime import datetime
 
 import numpy as np
 import tyro
-from gx_infer.action_chunk_broker import ActionChunkBroker
+from gx_infer.action_chunk_broker import AsyncActionChunkBroker, ActionChunkBroker
 from gx_infer.websocket_client_policy import WebsocketClientPolicy
 
 
@@ -21,17 +21,17 @@ class DummyAgent:
         action = action_dict
         # Simulate applying action to the robot
         timestamp = datetime.now().strftime("%Y-%m%d-%H:%M")
-        print(f"[{timestamp}] Applying action: {action}")
+        # print(f"[{timestamp}] Applying action: {action}")
 
     def get_obs(self) -> dict:
-        obs_state = np.random.randn(8)
-        obs_img_head = np.random.randn(224, 400, 3) * 255
-        obs_img_right_wrist = np.random.randn(224, 400, 3) * 255
+        obs_state = np.random.randn(30)
+        obs_img_head = (np.random.rand(224,400,3) * 255).astype(np.uint8)
+        obs_img_right_wrist = (np.random.rand(224,224,3) * 255).astype(np.uint8)
 
         obs_dict = {
             "observation.state": obs_state,
-            "observation.images.cam_head": obs_img_head,
-            "observation.images.cam_right_wrist": obs_img_right_wrist,
+            "observation.images.head": obs_img_head,
+            "observation.images.right_wrist": obs_img_right_wrist,
             "task": "pick up NaiLong and lift it up.",
             "reset": 0
         }
@@ -44,10 +44,7 @@ class Args:
     port: int = 8001
 
     max_hz = 1
-    action_horizon: int = 5
-
-    num_episodes: int = 1
-    max_episode_steps: int = 30
+    action_horizon: int = 50
 
 
 def main(args: Args) -> None:
@@ -56,7 +53,7 @@ def main(args: Args) -> None:
         port=args.port,
     )
     agent = DummyAgent()
-    policy = ActionChunkBroker(
+    policy = AsyncActionChunkBroker(
         policy=ws_client_policy,
         action_horizon=args.action_horizon,
     )
@@ -65,15 +62,18 @@ def main(args: Args) -> None:
     agent.reset()
     time_buf = deque(maxlen=100)
     while True:
-        t_start = time.time()
+        
         obs_dict = agent.get_obs()
+        t_start = time.time()
         action_dict = policy.infer(obs_dict)
-        print(action_dict)
-        agent.apply_action(action_dict)
-
         time_buf.append(time.time() - t_start)
+        print(policy._cur_step)
+        agent.apply_action(action_dict)
+        time.sleep(0.02)
+
+        
         if t_start - last_log_time >= 1.0:
-            print(f"Frequency: {1 / np.mean(time_buf):.1f} Hz")
+            print(f"Frequency: {(1 / np.mean(time_buf)) / args.action_horizon:.2f} Hz")
             last_log_time = t_start
 
 
