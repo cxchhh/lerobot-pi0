@@ -37,94 +37,94 @@ class PI0Config(PreTrainedConfig):
             "ACTION": NormalizationMode.MEAN_STD,
         }
     )
-    features : dict[str, PolicyFeature] = field(default_factory=lambda:{
-        "observation.state": {
-            "dtype": "float32",
-            "shape": [74]
-        },
-        "observation.images.head": {
-            "dtype": "video",
-            "shape": [
-                3,
-                224,
-                400
-            ],
-            "names": [
-                "channels",
-                "height",
-                "width"
-            ],
-            "info": {
-                "video.height": 224,
-                "video.width": 400,
-                "video.codec": "av1",
-                "video.pix_fmt": "yuv420p",
-                "video.is_depth_map": False,
-                "video.fps": 50,
-                "video.channels": 3,
-                "has_audio": False
-            }
-        },
-        "observation.images.right_wrist": {
-            "dtype": "video",
-            "shape": [
-                3,
-                224,
-                224
-            ],
-            "names": [
-                "channels",
-                "height",
-                "width"
-            ],
-            "info": {
-                "video.height": 224,
-                "video.width": 224,
-                "video.codec": "av1",
-                "video.pix_fmt": "yuv420p",
-                "video.is_depth_map": False,
-                "video.fps": 50,
-                "video.channels": 3,
-                "has_audio": False
-            }
-        },
-        "action": {
-            "dtype": "float32",
-            "shape": [
-                30
-            ],
-        },
-        "timestamp": {
-            "dtype": "float32",
-            "shape": [
-                1
-            ],
-        },
-        "frame_index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        },
-        "episode_index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        },
-        "index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        },
-        "task_index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        }
-    })
+    # features : dict[str, PolicyFeature] = field(default_factory=lambda:{
+    #     "observation.state": {
+    #         "dtype": "float32",
+    #         "shape": [74]
+    #     },
+    #     "observation.images.head": {
+    #         "dtype": "video",
+    #         "shape": [
+    #             3,
+    #             224,
+    #             400
+    #         ],
+    #         "names": [
+    #             "channels",
+    #             "height",
+    #             "width"
+    #         ],
+    #         "info": {
+    #             "video.height": 224,
+    #             "video.width": 400,
+    #             "video.codec": "av1",
+    #             "video.pix_fmt": "yuv420p",
+    #             "video.is_depth_map": False,
+    #             "video.fps": 50,
+    #             "video.channels": 3,
+    #             "has_audio": False
+    #         }
+    #     },
+    #     "observation.images.right_wrist": {
+    #         "dtype": "video",
+    #         "shape": [
+    #             3,
+    #             224,
+    #             224
+    #         ],
+    #         "names": [
+    #             "channels",
+    #             "height",
+    #             "width"
+    #         ],
+    #         "info": {
+    #             "video.height": 224,
+    #             "video.width": 224,
+    #             "video.codec": "av1",
+    #             "video.pix_fmt": "yuv420p",
+    #             "video.is_depth_map": False,
+    #             "video.fps": 50,
+    #             "video.channels": 3,
+    #             "has_audio": False
+    #         }
+    #     },
+    #     "action": {
+    #         "dtype": "float32",
+    #         "shape": [
+    #             30
+    #         ],
+    #     },
+    #     "timestamp": {
+    #         "dtype": "float32",
+    #         "shape": [
+    #             1
+    #         ],
+    #     },
+    #     "frame_index": {
+    #         "dtype": "int64",
+    #         "shape": [
+    #             1
+    #         ],
+    #     },
+    #     "episode_index": {
+    #         "dtype": "int64",
+    #         "shape": [
+    #             1
+    #         ],
+    #     },
+    #     "index": {
+    #         "dtype": "int64",
+    #         "shape": [
+    #             1
+    #         ],
+    #     },
+    #     "task_index": {
+    #         "dtype": "int64",
+    #         "shape": [
+    #             1
+    #         ],
+    #     }
+    # })
 
     # Shorter state and action vectors will be padded
     max_state_dim: int = 128

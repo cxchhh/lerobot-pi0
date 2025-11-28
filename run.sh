@@ -9,7 +9,7 @@ torchrun \
   --dataset.repo_id=lerobot/$ID \
   --dataset.root=/mnt/kpfs/danshili/Workspace/lerobot/storage/data/lerobot/$ID \
   --job_name=$ID \
-  --wandb.enable=true \
+  --wandb.enable=false \
   --batch_size=16 \
   --steps=120000 \
   --policy.path=$HOME/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch \

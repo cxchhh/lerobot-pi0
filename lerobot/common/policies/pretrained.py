@@ -111,7 +111,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
             print("Loading weights from local directory")
             try:
                 model_file = os.path.join(model_id, SAFETENSORS_SINGLE_FILE)
-                policy = cls._load_as_safetensor(instance, model_file, config.device, strict)
+                policy = cls._load_as_safetensor(instance, model_file, config.device, strict=True)
             except FileNotFoundError as e:
                 model_file = os.path.join(model_id, "pretrained_model", SAFETENSORS_SINGLE_FILE)
                 policy = cls._load_as_safetensor(instance, model_file, config.device, strict)

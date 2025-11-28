@@ -163,7 +163,7 @@ class HVLAConfig(PreTrainedConfig):
     log_interval: int = 200
     reset_ratio: float = 1e-3
     termination_threshold: float = 0.5
-    bf16: bool = False
+    bf16: bool = True
     load_path: str = ""
 
     # Training presets
