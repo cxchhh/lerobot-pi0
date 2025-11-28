@@ -26,9 +26,9 @@ PORT = "8001"
 
 def process_img(img):
     img = torch.from_numpy(img)
-    if img.ndim == 3:
+    if img.ndim == 3 or img.ndim == 4 and img.shape[0] != 1:
         img = img.unsqueeze(0)
-    img = einops.rearrange(img, "b h w c -> b c h w").contiguous()
+    img = einops.rearrange(img, "... h w c -> ... c h w").contiguous()
     img = img.type(torch.float32)
     img /= 255
     return img
@@ -52,7 +52,7 @@ class ServerPolicy(_base_policy.BasePolicy):
             self.model.reset()
 
         action = self.model.get_action_chunk(observation).cpu().numpy()
-        print(action.shape, action)
+        print(action.round(2))
         return {"actions": action }
 
 @parser.wrap()

@@ -1,4 +1,4 @@
 TOKENIZERS_PARALLELISM=false python server.py \
-   --policy.path=outputs/train/2025-08-24/21-32-04_sim-v7.4-MoveGrasp/checkpoints/050000/pretrained_model \
-   --dataset.repo_id=/mnt/kpfs/danshili/Workspace/lerobot/storage/data/lerobot/sim-v7.4-MoveGrasp \
-   --dataset.root=/mnt/kpfs/danshili/Workspace/lerobot/storage/data/lerobot/sim-v7.4-MoveGrasp
+   --policy.path=outputs/train/2025-11-27/15-53-52_sim-v4.7-MoveGrasp/checkpoints/last/pretrained_model \
+   --dataset.repo_id=lerobot_data/sim-v4.7-MoveGrasp \
+   --dataset.root=./lerobot_data/sim-v4.7-MoveGrasp
