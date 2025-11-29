@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import logging
+import os
 
 from torch import nn
 
@@ -172,8 +173,8 @@ def make_policy(
     cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
     cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
     kwargs["config"] = cfg
-
-    if cfg.pretrained_path:
+    
+    if cfg.pretrained_path and os.path.exists(os.path.join(cfg.pretrained_path, "model.safetensors")):
         # Load a pretrained policy and override the config if needed (for example, if there are inference-time
         # hyperparameters that we want to vary).
         print("load checkpoint from", cfg.pretrained_path)

@@ -54,6 +54,30 @@ class ServerPolicy(_base_policy.BasePolicy):
         action = self.model.get_action_chunk(observation).cpu().numpy()
         print(action.round(2))
         return {"actions": action }
+    
+class ServerPolicyDual(_base_policy.BasePolicy):
+    def __init__(self, model: PreTrainedPolicy, device: str):
+        self.model = model
+        self.device = device
+
+        self.slow_system = model
+
+    def infer(self, obs_dict: Dict) -> Dict:
+        qpos = obs_dict['observation.state']
+        observation = dict()
+        observation['observation.state'] = torch.tensor(np.array(qpos)).unsqueeze(0).float().to(self.device)
+        for key in obs_dict:
+            if "images" in key:
+                observation[key] = process_img(np.array(obs_dict[key])).to(self.device)
+        observation['task'] = [obs_dict['task']]
+        observation["task_index"] = torch.tensor(0).unsqueeze(0).to(self.device)
+
+        if obs_dict['reset']:
+            self.model.reset()
+
+        action = self.model.get_action_chunk(observation).cpu().numpy()
+        print(action.round(2))
+        return {"actions": action }
 
 @parser.wrap()
 def main_wrapper(cfg: TrainPipelineConfig):
@@ -73,13 +97,21 @@ def main_wrapper(cfg: TrainPipelineConfig):
 
     # load policy
     logging.info("Making policy.")
+    if cfg.policy.type == "hvla":
+        cfg.policy.eval = True
+        cfg.policy.load_path = cfg.policy.pretrained_path
+
     network: PreTrainedPolicy = make_policy(
         cfg=cfg.policy,
         ds_meta=ds_meta
     )
     network.eval()
 
-    policy = ServerPolicy(model=network, device=cfg.policy.device)
+    breakpoint()
+    if cfg.policy.type == "hvla":
+        policy = ServerPolicyDual(model=network, device=cfg.policy.device)
+    else:
+        policy = ServerPolicy(model=network, device=cfg.policy.device)
     policy_server = WebsocketPolicyServer(policy=policy, host=HOST, port=PORT)
     print(f"Starting server on {HOST}:{PORT}")
     policy_server.serve_forever()

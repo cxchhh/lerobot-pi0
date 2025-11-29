@@ -125,6 +125,7 @@ class HVLAConfig(PreTrainedConfig):
     # # Attention utils
     # use_cache: bool = True
     # attention_implementation: str = "eager"  # or fa2, flex
+    eval: bool = False
 
     # ===== VLM config =====
     vlm_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"

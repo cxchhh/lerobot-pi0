@@ -15,5 +15,6 @@
         224,
         224
     ],
-    "empty_cameras": 0
+    "empty_cameras": 0,
+    "bf16": true
 }

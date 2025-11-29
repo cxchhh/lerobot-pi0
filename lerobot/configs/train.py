@@ -74,7 +74,8 @@ class TrainPipelineConfig(HubMixin):
             # Only load the policy config
             cli_overrides = parser.get_cli_overrides("policy")
             self.policy = PreTrainedConfig.from_pretrained(policy_path, cli_overrides=cli_overrides)
-            if os.path.exists(os.path.join(policy_path, "model.safetensors")):
+            if os.path.exists(os.path.join(policy_path, "model.safetensors")
+            ) or os.path.exists(os.path.join(policy_path, "model.safetensors.index.json")):
                 self.policy.pretrained_path = policy_path
         elif self.resume:
             # The entire train config is already loaded, we just need to get the checkpoint dir

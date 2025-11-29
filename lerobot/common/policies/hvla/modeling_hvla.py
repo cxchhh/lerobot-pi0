@@ -30,15 +30,16 @@ class HVLAPolicy(PreTrainedPolicy):
         self.normalize_targets = Normalize(config.output_features, config.normalization_mapping, dataset_stats)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dtype = torch.float32 # torch.bfloat16 if config.bf16 else torch.float32
+        self.dtype = torch.bfloat16 if config.bf16 and config.eval else torch.float32
 
         self.proc = AutoProcessor.from_pretrained(config.vlm_model, use_fast=True)
         llm_config = Qwen2_5_VLConfig.from_pretrained(
-            config.vlm_model,
+            config.vlm_model if config.load_path == "" else config.load_path,
             attn_implementation="flash_attention_2" if config.bf16 else "eager",
         )
+        print(self.dtype)
         self.model = HVLA.from_pretrained(
-            pretrained_model_name_or_path=config.vlm_model,
+            pretrained_model_name_or_path=config.vlm_model if config.load_path == "" else config.load_path,
             config=llm_config,
             torch_dtype=self.dtype,
             device_map=self.device,
