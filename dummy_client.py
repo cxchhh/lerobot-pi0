@@ -23,8 +23,8 @@ class DummyAgent:
         timestamp = datetime.now().strftime("%Y-%m%d-%H:%M")
         # print(f"[{timestamp}] Applying action: {action}")
 
-    def get_obs(self) -> dict:
-        obs_state = np.random.randn(30)
+    def get_obs(self, reset: int = 0) -> dict:
+        obs_state = np.random.randn(65)
         obs_img_head = (np.random.rand(224,400,3) * 255).astype(np.uint8)
         obs_img_right_wrist = (np.random.rand(224,224,3) * 255).astype(np.uint8)
 
@@ -32,7 +32,15 @@ class DummyAgent:
             "observation.state": obs_state,
             "observation.images.head": obs_img_head,
             "observation.images.right_wrist": obs_img_right_wrist,
-            "task": "pick up NaiLong and lift it up.",
+            "task": "Pick up the yellow block and place it on the table",
+            "reset": reset
+        }
+        return obs_dict
+    
+    def get_obs_fast(self) -> dict:
+        obs_state = np.random.randn(65)
+        obs_dict = {
+            "observation.state": obs_state,
             "reset": 0
         }
         return obs_dict
@@ -44,7 +52,7 @@ class Args:
     port: int = 8001
 
     max_hz = 1
-    action_horizon: int = 50
+    action_horizon: int = 5
 
 
 def main(args: Args) -> None:
@@ -53,28 +61,32 @@ def main(args: Args) -> None:
         port=args.port,
     )
     agent = DummyAgent()
-    policy = AsyncActionChunkBroker(
-        policy=ws_client_policy,
-        action_horizon=args.action_horizon,
-    )
+    policy = ws_client_policy
 
     last_log_time = time.time()
     agent.reset()
     time_buf = deque(maxlen=100)
+    policy.infer(agent.get_obs(reset=1))
+    _step = 0
     while True:
-        
-        obs_dict = agent.get_obs()
         t_start = time.time()
-        action_dict = policy.infer(obs_dict)
-        time_buf.append(time.time() - t_start)
-        print(policy._cur_step)
-        agent.apply_action(action_dict)
-        time.sleep(0.02)
-
+        if _step % args.action_horizon == 0:
+            obs_dict = agent.get_obs()
+        else: 
+            obs_dict = agent.get_obs_fast()
         
-        if t_start - last_log_time >= 1.0:
-            print(f"Frequency: {(1 / np.mean(time_buf)) / args.action_horizon:.2f} Hz")
+        action_dict = policy.infer(obs_dict)
+        agent.apply_action(action_dict)
+        
+
+        time_buf.append(time.time() - t_start)
+        if t_start - last_log_time >= 0.5:
+            print(f"Frequency: {(1 / np.mean(time_buf)):.2f} Hz")
             last_log_time = t_start
+        
+        if time.time() - t_start < 0.02:
+            time.sleep(0.02 - (time.time() - t_start))
+        _step += 1
 
 
 if __name__ == "__main__":
