@@ -26,16 +26,18 @@ class HVLA(Qwen2_5_VLModel):
         self.vla_config = vla_config
 
         freeze_backbone = vla_config.freeze_backbone
+        freeze_vision = vla_config.freeze_vision
         self.latent_dim = vla_config.embed_dim
         self.command_dim = vla_config.command_dim
 
         # Optionally freeze the backbone
-        if freeze_backbone:
+        if freeze_vision:
             for p in self.visual.parameters():
                 p.requires_grad = False
+            self.visual.eval()
+        if freeze_backbone:
             for p in self.language_model.parameters():
                 p.requires_grad = False
-            self.visual.eval()
             self.language_model.eval()
 
     def init_action_expert(self):
@@ -211,9 +213,8 @@ class HVLA(Qwen2_5_VLModel):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         latent_embeds = mu + std * eps if self.training else mu
-        pred_cmds = self.command_predictor(mu)
 
-        return latent_embeds, pred_cmds
+        return latent_embeds
 
     def get_action_loss(self, robot_observations: torch.Tensor, target_action: torch.Tensor):
 

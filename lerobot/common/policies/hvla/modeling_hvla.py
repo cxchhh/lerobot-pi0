@@ -8,7 +8,6 @@ from torch import Tensor, nn
 from transformers import Qwen2_5_VLConfig, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
-from lerobot.common.constants import ACTION, OBS_STATE
 from lerobot.common.policies.hvla.hvla_model import HVLA
 from lerobot.common.policies.normalize import Normalize, Unnormalize
 from lerobot.common.policies.hvla.configuration_hvla import HVLAConfig
@@ -85,20 +84,17 @@ class HVLAPolicy(PreTrainedPolicy):
         assert len(bad) == 0, f"Found non-fp32 params: {bad[:5]}..."
         
         with torch.autocast("cuda", dtype=torch.bfloat16) if self.config.bf16 else nullcontext():
-            latent_embedding, pred_cmds = self.model(**vlm_inputs)
-            cmd_loss = torch.nn.functional.mse_loss(pred_cmds, cmds_gt.to(self.device, dtype=torch.bfloat16))
+            latent_embedding = self.model(**vlm_inputs)
         
         obs = torch.concatenate([obs.float(), latent_embedding.float()], dim=-1) # (B*k, 1, p+D)
         obs = rearrange(obs, "(b k) d -> b k d", k=self.config.n_obs_steps) # (B, k, p+D)
-        
 
         with torch.amp.autocast("cuda", enabled=False) if self.config.bf16 else nullcontext():
             pred_motor_targets = self.model.pred_action(obs)
             action_loss = self.model.get_action_loss(obs, action_gt.float())
-            total_loss = action_loss + cmd_loss.float()
-            
+            total_loss = action_loss
 
-        info = {"action_loss": action_loss.item(), "cmd_loss":cmd_loss.item(), "action": pred_motor_targets[:, -1, :]}
+        info = {"action_loss": action_loss.item(), "action": pred_motor_targets[:, -1, :]}
         return total_loss, info
 
 
@@ -111,8 +107,7 @@ class HVLAPolicy(PreTrainedPolicy):
         vlm_inputs = self.proc(text=language_cmds, images=image_inputs, return_tensors="pt", padding=True)
         vlm_inputs = vlm_inputs.to(device=self.device, dtype=self.dtype)
 
-        latent_embedding, pred_cmds = self.model(**vlm_inputs)
-        pred_cmds_numpy = pred_cmds.float().detach().cpu().numpy()
+        latent_embedding = self.model(**vlm_inputs)
 
         obs = torch.concatenate([obs, latent_embedding], dim=-1)
         if self.obs_list:
@@ -124,7 +119,7 @@ class HVLAPolicy(PreTrainedPolicy):
 
         pred_motor_targets = self.model.pred_action(obs_list)
 
-        return pred_motor_targets[:, -1, :], pred_cmds_numpy
+        return pred_motor_targets[:, -1, :]
 
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         language_cmds = batch["task"]
@@ -133,7 +128,7 @@ class HVLAPolicy(PreTrainedPolicy):
         image_list_r = rearrange(batch["observation.images.right_wrist"], "b k c h w -> (b k) c h w")
         image_list = [[image_head, image_r] for image_head, image_r in zip(image_list_head, image_list_r)]
         obs = rearrange(batch["observation.state"], "b k d -> (b k) d")
-        breakpoint()
+       
         return self.infer(language_cmds, obs, image_list)
 
     def get_optim_params(self) -> dict:

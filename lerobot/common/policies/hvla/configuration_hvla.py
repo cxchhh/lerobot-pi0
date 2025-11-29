@@ -25,7 +25,7 @@ class HVLAConfig(PreTrainedConfig):
     features : dict[str, PolicyFeature] = field(default_factory=lambda:{
         "observation.state": {
             "dtype": "float32",
-            "shape": [30]
+            "shape": [65]
         },
         "observation.images.head": {
             "dtype": "video",
@@ -76,7 +76,7 @@ class HVLAConfig(PreTrainedConfig):
         "action": {
             "dtype": "float32",
             "shape": [
-                23
+                30
             ],
         },
         "timestamp": {
@@ -112,8 +112,8 @@ class HVLAConfig(PreTrainedConfig):
     })
 
     # Shorter state and action vectors will be padded
-    max_state_dim: int = 128
-    max_action_dim: int = 32
+    max_state_dim: int = 65
+    max_action_dim: int = 30
 
     # Image preprocessing
     resize_imgs_with_padding: tuple[int, int] = (224, 224)
@@ -129,7 +129,8 @@ class HVLAConfig(PreTrainedConfig):
     # ===== VLM config =====
     vlm_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     rewrite_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
-    freeze_backbone: bool = True
+    freeze_backbone: bool = False
+    freeze_vision: bool = True
 
     # =====  VLM query config  =====
     latent_dim: int = 256
@@ -155,11 +156,11 @@ class HVLAConfig(PreTrainedConfig):
     sample_steps: int = 16
     path: str = "rectified"
 
-    obs_dim: int = 30 # 98
-    act_dim: int = 59 # 23
+    obs_dim: int = 65 # 29 + 29 + 4 + 3
+    act_dim: int = 30 # 29 + 1
 
     # ===== Training Hyperparameters =====
-    total_timesteps: int = 20_000
+    total_timesteps: int = 50_000
     log_interval: int = 200
     reset_ratio: float = 1e-3
     termination_threshold: float = 0.5
