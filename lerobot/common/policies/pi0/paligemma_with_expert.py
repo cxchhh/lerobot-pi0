@@ -206,9 +206,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
 
     def to_bfloat16_like_physical_intelligence(self):
         self.paligemma = self.paligemma.to(dtype=torch.bfloat16)
-        lm = "language_model" \
-            if getattr(self.paligemma.language_model, "model", None) is None \
-            else "language_model.model"
+        lm = "language_model.model" if hasattr(self.paligemma.language_model, "model") else "language_model"
         params_to_change_dtype = [
             f"{lm}.layers",
             "gemma_expert.model.layers",
@@ -227,7 +225,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
             return self.paligemma.model.get_image_features(image)
 
     def embed_language_tokens(self, tokens: torch.Tensor):
-        if getattr(self.paligemma.language_model, "model", None) is None:
+        if not hasattr(self.paligemma.language_model, "model") :
             return self.paligemma.language_model.embed_tokens(tokens)
         return self.paligemma.language_model.model.embed_tokens(tokens)
 
@@ -242,7 +240,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         fill_kv_cache: Optional[bool] = None,
     ):
         lm = self.paligemma.language_model \
-            if getattr(self.paligemma.language_model, "model", None) is None \
+            if not hasattr(self.paligemma.language_model, "model") \
             else self.paligemma.language_model.model
 
         models = [lm, self.gemma_expert.model]

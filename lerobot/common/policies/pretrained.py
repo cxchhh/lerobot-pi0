@@ -152,12 +152,27 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 model.to(map_location)
         else:
             # safetensors.torch.load_model(model, model_file, strict=False, device=map_location)
-
             state_dict = safetensors.torch.load_file(model_file, device=map_location)
-            # 过滤掉不匹配的参数
             model_dict = model.state_dict()
+
+            # compact with recent transformers
+            if hasattr(model.model, "paligemma_with_expert") and not hasattr(model.model.paligemma_with_expert.paligemma.language_model, "model"):
+                keys_to_change = [k for k in state_dict.keys() if "language_model.model." in k]
+                for k in keys_to_change:
+                    new_k = k.replace("language_model.model.", "model.language_model.", 1)
+                    state_dict[new_k] = state_dict.pop(k)
+                keys_to_change = [k for k in state_dict.keys() if ".vision_tower." in k]
+                for k in keys_to_change:
+                    new_k = k.replace("vision_tower.", "model.vision_tower.", 1)
+                    state_dict[new_k] = state_dict.pop(k)
+                state_dict["model.paligemma_with_expert.paligemma.lm_head.weight"
+                    ] = state_dict.pop("model.paligemma_with_expert.paligemma.language_model.lm_head.weight")
+                state_dict["model.paligemma_with_expert.paligemma.model.multi_modal_projector.linear.bias"
+                    ] = state_dict.pop("model.paligemma_with_expert.paligemma.multi_modal_projector.linear.bias")
+                state_dict["model.paligemma_with_expert.paligemma.model.multi_modal_projector.linear.weight"
+                    ] = state_dict.pop("model.paligemma_with_expert.paligemma.multi_modal_projector.linear.weight")
+
             filtered = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
-            # 覆盖加载
             model.load_state_dict(filtered, strict=False)
         return model
 
