@@ -1,3 +1,4 @@
+import time
 from typing import Dict
 import einops
 from termcolor import colored
@@ -42,6 +43,8 @@ class ServerPolicyDual(_base_policy.BasePolicy):
         self.device = device
 
     def infer(self, obs_dict: Dict) -> Dict: 
+        torch.cuda.synchronize()
+        time_start = time.time()
         fast_input = dict()
         if "task" in obs_dict:
             slow_input = dict()
@@ -57,10 +60,13 @@ class ServerPolicyDual(_base_policy.BasePolicy):
         elif "task" in obs_dict:
             self.model.s2_infer_async(slow_input)
 
-        fast_input['observation.state'] = torch.tensor(np.array(obs_dict['observation.state'])).unsqueeze(0).float().to(self.device)
-
-        action = self.model.s1_infer(fast_input).cpu().numpy()
-        print(action.round(2))
+        fast_input['observation.state'] = torch.tensor(np.array(obs_dict['observation.state'])).unsqueeze(0).to(self.device)
+        torch.cuda.synchronize()
+        time_end = time.time()
+        if time_end - time_start > 0.1:
+            print(f"pre s1_infer time: {time_end - time_start}")
+        action = self.model.s1_infer(fast_input).float().cpu().numpy()
+        print("*", end="")
         return {"actions": action }
 
 @parser.wrap()

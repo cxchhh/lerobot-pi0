@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Optional
 from transformers import Qwen2_5_VLConfig, Qwen2_5_VLModel
 from transformers.utils import auto_docstring, is_torchdynamo_compiling
-from lerobot.common.policies.hvla.action_expert import TransformerFlowMatching, QueryTransformer, CausalTransformer
+from lerobot.common.policies.hvla.action_expert import FlowMatching, TransformerFlowMatching, QueryTransformer, CausalTransformer
 from lerobot.common.policies.hvla.configuration_hvla import HVLAConfig
 
 
@@ -42,22 +42,18 @@ class HVLA(Qwen2_5_VLModel):
 
     def init_action_expert(self):
         """Initialize the action expert with the given configuration."""
-        self.vla_config.q_dim = int(2 * self.vla_config.latent_dim)
+        self.vla_config.q_dim = int(self.vla_config.latent_dim)
         self.vla_config.kv_dim = self.language_model.config.hidden_size
-        self.feature_extractor = QueryTransformer(self.vla_config, self.latent_dim * 2)
-        self.feature_extractor.to(self.device, dtype=torch.float32)
-
-        self.command_predictor = nn.Linear(self.latent_dim, self.command_dim)
-        self.command_predictor.to(self.device, dtype=torch.float32)
+        self.feature_extractor = QueryTransformer(self.vla_config, self.latent_dim)
+        self.feature_extractor.to(self.device, dtype=self.dtype)
 
         input_dim = self.latent_dim + self.vla_config.obs_dim
-        self.action_expert = CausalTransformer(self.vla_config, input_dim=input_dim, output_dim=self.vla_config.act_dim)
-        self.action_expert.to(self.device, dtype=torch.float32)
+        self.action_expert = FlowMatching(self.vla_config, input_dim=input_dim, output_dim=self.vla_config.act_dim)
+        self.action_expert.to(self.device, dtype=self.dtype) 
 
     def save_action_expert(self, save_path):
         state_dict = {
             'feature_extractor': self.feature_extractor.state_dict(),
-            'command_predictor': self.command_predictor.state_dict(),
             'action_expert': self.action_expert.state_dict()
         }
         torch.save(state_dict, os.path.join(save_path, "action_expert.pth"))
@@ -66,7 +62,6 @@ class HVLA(Qwen2_5_VLModel):
         state_dict = torch.load(load_path, map_location="cpu")
         self.feature_extractor.load_state_dict(state_dict["feature_extractor"], strict=strict)
         self.action_expert.load_state_dict(state_dict["action_expert"], strict=strict)
-        self.command_predictor.load_state_dict(state_dict["command_predictor"], strict=strict)
         print(f"Load pretrained action expert from {load_path}")
 
     @auto_docstring
@@ -208,23 +203,21 @@ class HVLA(Qwen2_5_VLModel):
         )
 
         last_hidden_state = outputs.last_hidden_state
-        latent_params = self.feature_extractor(last_hidden_state.to(dtype=torch.float32))
-        mu, logvar = torch.chunk(latent_params, 2, dim=-1)
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        latent_embeds = mu + std * eps if self.training else mu
+        latent_embeds = self.feature_extractor(last_hidden_state.to(dtype=self.dtype))
 
         return latent_embeds
 
-    def get_action_loss(self, robot_observations: torch.Tensor, target_action: torch.Tensor):
+    def get_action_loss(self, robot_observations: torch.Tensor, target_action: torch.Tensor, delay_steps: torch.Tensor):
 
-        robot_observations = robot_observations.to(self.device, dtype=torch.float32)
-        loss = F.mse_loss(self.action_expert(robot_observations), target_action)
+        robot_observations = robot_observations.to(self.device, dtype=self.dtype)
+        loss, _ = self.action_expert.flow_matching_loss(target_action, robot_observations, delay_steps)
 
         return loss
 
-    def pred_action(self, robot_observations: torch.Tensor):
-        robot_observations = robot_observations.to(self.device, dtype=torch.float32)
-        pred_actions = self.action_expert(robot_observations)
+    @torch.no_grad()
+    def pred_action(self, robot_observations: torch.Tensor, delay_steps: torch.Tensor):
+        robot_observations = robot_observations.to(self.device, dtype=self.dtype)
+        # pred_actions = self.action_expert.streaming_sample(robot_observations)
+        pred_actions = self.action_expert.sample(robot_observations, delay_steps)
 
         return pred_actions

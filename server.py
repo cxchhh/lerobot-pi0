@@ -107,7 +107,6 @@ def main_wrapper(cfg: TrainPipelineConfig):
     )
     network.eval()
 
-    breakpoint()
     if cfg.policy.type == "hvla":
         policy = ServerPolicyDual(model=network, device=cfg.policy.device)
     else:

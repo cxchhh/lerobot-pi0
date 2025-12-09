@@ -18,7 +18,8 @@ class DummyAgent:
         print(f"[{timestamp}] Resetting agent")
 
     def apply_action(self, action_dict: dict):
-        action = action_dict
+        action = action_dict['actions']
+        print(f"action shape: {action.shape}")
         # Simulate applying action to the robot
         timestamp = datetime.now().strftime("%Y-%m%d-%H:%M")
         # print(f"[{timestamp}] Applying action: {action}")
@@ -51,8 +52,7 @@ class Args:
     host: str = "localhost"
     port: int = 8001
 
-    max_hz = 1
-    action_horizon: int = 5
+    action_horizon: int = 20
 
 
 def main(args: Args) -> None:
@@ -83,9 +83,8 @@ def main(args: Args) -> None:
         if t_start - last_log_time >= 0.5:
             print(f"Frequency: {(1 / np.mean(time_buf)):.2f} Hz")
             last_log_time = t_start
-        
-        if time.time() - t_start < 0.02:
-            time.sleep(0.02 - (time.time() - t_start))
+
+        time.sleep(max(0.02 - (time.time() - t_start), 0))
         _step += 1
 
 

@@ -12,8 +12,8 @@ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 @dataclass
 class HVLAConfig(PreTrainedConfig):
     # Input / output structure.
-    n_obs_steps: int = 5 # k-frame observation
-    n_action_steps: int = 50
+    n_obs_steps: int = 1 # k-frame observation
+    n_action_steps: int = 20
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -76,7 +76,7 @@ class HVLAConfig(PreTrainedConfig):
         "action": {
             "dtype": "float32",
             "shape": [
-                30
+                37
             ],
         },
         "timestamp": {
@@ -113,7 +113,7 @@ class HVLAConfig(PreTrainedConfig):
 
     # Shorter state and action vectors will be padded
     max_state_dim: int = 65
-    max_action_dim: int = 30
+    max_action_dim: int = 40
 
     # Image preprocessing
     resize_imgs_with_padding: tuple[int, int] = (224, 224)
@@ -158,7 +158,7 @@ class HVLAConfig(PreTrainedConfig):
     path: str = "rectified"
 
     obs_dim: int = 65 # 29 + 29 + 4 + 3
-    act_dim: int = 30 # 29 + 1
+    act_dim: int = 37 # 29 + 1
 
     # ===== Training Hyperparameters =====
     total_timesteps: int = 50_000
@@ -229,12 +229,16 @@ class HVLAConfig(PreTrainedConfig):
 
     @property
     def observation_delta_indices(self) -> None:
-        return list(range(-self.n_obs_steps+1, 1))
+        return None
 
     @property
     def action_delta_indices(self) -> list:
-        return list(range(-self.n_obs_steps+1, 1)) # g.t. action for each parallel frame
+        return list(range(self.n_action_steps*2)) # g.t. action for each parallel frame
 
     @property
     def reward_delta_indices(self) -> None:
         return None
+
+    @property
+    def state_delta_indices(self) -> list:
+        return list(range(self.n_action_steps))

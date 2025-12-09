@@ -1,8 +1,11 @@
 import math
+import time
 import torch
 import torch.nn as nn
 from typing import Tuple
 import torch.nn.functional as F
+
+from lerobot.common.policies.hvla.configuration_hvla import HVLAConfig
 
 
 # ---------------- Rotary Embedding ----------------
@@ -504,6 +507,80 @@ class VectorFieldNet(nn.Module):
             z = blk(z)
         return self.output_proj(z)
 
+class TransformerVectorField(nn.Module):
+    """
+    v_theta(X_t, t_emb, cond_emb) -> velocity field over a length-H action sequence.
+    X_t:        (B, H, D_action)
+    t_emb:      (B, H, t_dim)
+    cond_emb:   (B, cond_dim)
+    return:     (B, H, D_action)
+    """
+
+    def __init__(
+        self,
+        action_dim: int,
+        t_dim: int,
+        cond_dim: int,
+        hidden_dim: int,
+        horizon: int,
+        num_layers: int = 6,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
+        self.horizon = horizon
+
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
+        self.t_proj = nn.Linear(t_dim, hidden_dim)
+        self.c_proj = nn.Linear(cond_dim, hidden_dim)
+        self.pos_emb = nn.Embedding(horizon, hidden_dim)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+            activation="gelu",
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.output_proj = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+        self.register_buffer("pos_ids", torch.arange(horizon).unsqueeze(0), persistent=False)
+
+    def forward(
+        self,
+        x_seq: torch.Tensor,     # (B, H, D_action)
+        t_emb: torch.Tensor,     # (B, H, t_dim)
+        cond_emb: torch.Tensor,  # (B, cond_dim)
+    ) -> torch.Tensor:
+        B, H, D = x_seq.shape
+
+        h = self.action_proj(x_seq)  # (B, H, hidden)
+
+        # 时间 embedding：逐 token
+        t_h = self.t_proj(t_emb)     # (B, H, hidden)
+
+        # 条件 embedding：全局，再 broadcast 到 H
+        c_h = self.c_proj(cond_emb).unsqueeze(1)  # (B, 1, hidden)
+        c_h = c_h.expand(-1, H, -1)              # (B, H, hidden)
+
+        h = h + t_h + c_h
+        # Positional encodings
+        h = h + self.pos_emb(self.pos_ids[:, :H])  # (B, H, hidden)
+        
+        h = self.encoder(h)  # (B, H, hidden)
+
+        v = self.output_proj(h)  # (B, H, D_action)
+        return v
+
+
 
 class FlowMatching(nn.Module):
     """
@@ -513,41 +590,31 @@ class FlowMatching(nn.Module):
     - model internal action vector (batch_size, output_dim)
     """
 
-    def __init__(self, config, input_dim, output_dim):
+    def __init__(self, config:HVLAConfig, input_dim, output_dim):
         super().__init__()
         self.config = config
+        self.device = config.device
+        self.dtype = torch.bfloat16 if config.bf16 else torch.float32
 
         # Derived dimensions
         self.action_dim = int(output_dim)
         self.cond_feat_dim = int(config.cond_feat_dim)
+        self.horizon = int(config.n_action_steps)
 
         # Condition encoder
-        self.condition_encoder = CondEncoder(input_dim, self.cond_feat_dim)
+        self.condition_encoder = CondEncoder(input_dim, self.cond_feat_dim).to(self.device, dtype=self.dtype)
+        self.delay_emb = nn.Embedding(self.horizon, self.config.cond_feat_dim).to(self.device, dtype=self.dtype)
 
         # Vector field network
-        self.vector_field = VectorFieldNet(
-            input_dim_x=self.action_dim,
-            input_dim_t=self.config.t_embed_dim,
-            input_dim_c=self.config.cond_feat_dim,
+        self.vector_field = TransformerVectorField(
+            action_dim=self.action_dim,
+            t_dim=self.config.t_embed_dim,
+            cond_dim=self.config.cond_feat_dim,
             hidden_dim=self.config.flow_hidden_dim,
-            num_layers=self.config.flow_num_layers,
-        )
+            horizon=self.horizon,
+        ).to(self.device, dtype=self.dtype)
 
-        # Action normalization buffers (z-score). Not persisted in checkpoints by default.
-        self.register_buffer("action_mean", torch.zeros(1, self.action_dim), persistent=False)
-        self.register_buffer("action_std", torch.ones(1, self.action_dim), persistent=False)
-
-    # --------- Action normalization ---------
-    @torch.no_grad()
-    def set_action_stats(self, mean: torch.Tensor, std: torch.Tensor):
-        """
-        Set dataset-wide action normalization stats.
-        mean, std: shape (action_dim,) or (1, action_dim)
-        """
-        mean = mean.view(1, -1).to(self.action_mean.device)
-        std = std.view(1, -1).to(self.action_std.device).clamp(min=1e-6)
-        self.action_mean.copy_(mean)
-        self.action_std.copy_(std)
+        self.streaming_buffer = None
 
     # --------- Condition encoding ---------
     def encode_condition(self, condition_tokens: torch.Tensor) -> torch.Tensor:
@@ -559,83 +626,143 @@ class FlowMatching(nn.Module):
         return projected
 
     # --------- Flow-Matching training loss ---------
-    def flow_matching_loss(self, target_action: torch.Tensor, condition_token: torch.Tensor) -> Tuple[
+    def flow_matching_loss(self, target_action: torch.Tensor, condition_token: torch.Tensor, delay_steps: torch.Tensor) -> Tuple[
         torch.Tensor, dict]:
         """
-        target_action: (batch_size, output_dim)
+        target_action: (batch_size, horizon, output_dim)
         condition_token:    (batch_size, cond_feat_dim)
+        delay_steps:        (batch_size)
         """
         batch_size = target_action.shape[0]
         device = target_action.device
 
-        # Normalize
-        target_norm = (target_action - self.action_mean) / self.action_std  # (B, D)
-
         # Sample time and noise
-        time_scalar = torch.rand(batch_size, 1, device=device)  # U(0,1)
-        gaussian_noise = torch.randn_like(target_norm)
+        time_scalar = torch.rand(batch_size, self.horizon, 1, device=device, dtype=self.dtype)  # U(0,1)
+        gaussian_noise = torch.randn_like(target_action, device=device, dtype=self.dtype)
 
         if self.config.path == "rectified":
             # Straight path: x_t = (1 - t) x0 + t * eps; v* = eps - x0
-            xt = (1.0 - time_scalar) * target_norm + time_scalar * gaussian_noise
-            velocity_target = gaussian_noise - target_norm
+            xt = (1.0 - time_scalar) * target_action + time_scalar * gaussian_noise
+            velocity_target = gaussian_noise - target_action
         elif self.config.path == "cosine":
             # Gaussian path: alpha(t)=cos(pi/2 t), beta(t)=sin(pi/2 t)
             alpha = torch.cos(0.5 * math.pi * time_scalar)
             beta = torch.sin(0.5 * math.pi * time_scalar)
-            xt = alpha * target_norm + beta * gaussian_noise
+            xt = alpha * target_action + beta * gaussian_noise
 
             dalpha = -0.5 * math.pi * torch.sin(0.5 * math.pi * time_scalar)
             dbeta = 0.5 * math.pi * torch.cos(0.5 * math.pi * time_scalar)
-            velocity_target = dalpha * target_norm + dbeta * gaussian_noise
+            velocity_target = dalpha * target_action + dbeta * gaussian_noise
         else:
             raise ValueError(f"Unknown path type: {self.config.path}")
 
         # Time/condition embeddings
-        time_emb = timestep_embedding(time_scalar, self.config.t_embed_dim)  # (B, t_embed_dim)
-        cond_emb = self.encode_condition(condition_token)  # (B, condition_proj_dim)
+        time_scalar_flat = time_scalar.view(batch_size * self.horizon, 1)           # (B*H, 1)
+        time_emb_flat = timestep_embedding(time_scalar_flat, self.config.t_embed_dim)  # (B*H, t_dim)
+        time_emb = time_emb_flat.view(batch_size, self.horizon, -1).to(device=self.device, dtype=self.dtype) # (B, H, t_dim)
+        delay_emb = self.delay_emb(delay_steps.to(device=self.device, dtype=torch.long))
+        cond_emb = self.encode_condition(condition_token).to(device=self.device, dtype=self.dtype) + delay_emb # (B, condition_proj_dim)
 
         # Predict velocity and compute MSE
         velocity_pred = self.vector_field(xt, time_emb, cond_emb)
         loss = F.mse_loss(velocity_pred, velocity_target)
 
         with torch.no_grad():
-            target_mse = F.mse_loss(velocity_target, torch.zeros_like(velocity_target))
+            target_mse = F.mse_loss(velocity_target, torch.zeros_like(velocity_target, device=self.device, dtype=self.dtype))
 
         logs = {"loss": loss.item(), "target_var": target_mse.item()}
         return loss, logs
 
     # --------- Sampling (ODE integration: Euler) ---------
     @torch.no_grad()
-    def sample(self, condition_token: torch.Tensor, steps: int = 16, deterministic=False) -> torch.Tensor:
+    def sample(self, condition_token: torch.Tensor, delay_steps: torch.Tensor, steps: int = 16, deterministic=False) -> torch.Tensor:
         """
         condition_tokens: (batch_size, cond_feat_dim)
-        return: (batch_size, output_dim) in original (unnormalized) scale
+        return: (batch_size, n_action_steps, output_dim) in original (unnormalized) scale
         """
-        device = next(self.parameters()).device
         batch_size = condition_token.shape[0]
 
         # Start from standard Normal at t=1
         if deterministic:
-            action = torch.zeros(batch_size, self.action_dim, device=device)
+            action = torch.zeros(batch_size, self.horizon, self.action_dim, device=self.device, dtype=self.dtype)
         else:
-            action = torch.randn(batch_size, self.action_dim, device=device)
+            action = torch.randn(batch_size, self.horizon, self.action_dim, device=self.device, dtype=self.dtype)
 
         # Pre-compute condition embedding
-        cond_emb = self.encode_condition(condition_token)
+        delay_emb = self.delay_emb(delay_steps.to(device=self.device, dtype=torch.long))
+        cond_emb = self.encode_condition(condition_token) + delay_emb
 
         dt = 1.0 / steps
         # Integrate dx/dt = -v_theta(x, t, cond) from t=1 -> 0
         for step in range(steps, 0, -1):
-            t_curr = torch.full((batch_size, 1), step * dt, device=device).clamp(max=1.0 - 1e-4)
-            t_emb = timestep_embedding(t_curr, self.config.t_embed_dim)
+            t_curr = torch.full((batch_size, 1), step * dt, device=self.device, dtype=self.dtype).clamp(max=1.0 - 1e-4)
+            t_emb = timestep_embedding(t_curr, self.config.t_embed_dim).to(device=self.device, dtype=self.dtype)
+            t_emb = t_emb.unsqueeze(1).expand(-1, self.horizon, -1)
             velocity = self.vector_field(action, t_emb, cond_emb)
             action = action - velocity * dt
 
         # De-normalize and reshape
-        action = action * self.action_std + self.action_mean
-        return action.view(batch_size, self.action_dim)
+        action = action[:, 0, :]
+        return action
+    
+    @torch.no_grad()
+    def streaming_reset(self, init_condition_token: torch.Tensor, deterministic=False):
+        self.streaming_buffer = []
 
+        # Start from standard Normal at t=1
+        if deterministic:
+            action = torch.zeros(1, 1, self.action_dim, device=self.device, dtype=self.dtype)
+        else:
+            action = torch.randn(1, 1, self.action_dim, device=self.device, dtype=self.dtype)
+
+        # Pre-compute condition embedding
+        delay_emb = self.delay_emb(torch.zeros(1, device=self.device, dtype=torch.long))
+        cond_emb = self.encode_condition(init_condition_token) + delay_emb
+
+        dt = 1.0 / self.horizon
+        t_curr = (torch.arange(1, self.horizon + 1) * dt).clamp(max=1.0 - 1e-4).unsqueeze(-1) # [dt, 2dt, ..., 1]
+        for i in range(1, self.horizon):
+            self.streaming_buffer.append(action.clone())
+            noisy_actions = torch.cat(self.streaming_buffer, dim=1)
+            t_emb = timestep_embedding(t_curr[-i:], self.config.t_embed_dim).unsqueeze(0).to(device=self.device, dtype=self.dtype)
+            velocity = self.vector_field(noisy_actions, t_emb, cond_emb)
+            noisy_actions = noisy_actions - velocity * dt
+            self.streaming_buffer = list(noisy_actions.chunk(noisy_actions.size(1), dim=1))
+
+        self.streaming_buffer.append(action.clone())
+
+    @torch.no_grad()
+    def streaming_sample(self, condition_token: torch.Tensor, delay_steps: torch.Tensor, deterministic=False) -> torch.Tensor:
+        """
+        condition_tokens: (batch_size, cond_feat_dim)
+        return: (batch_size, n_action_steps, output_dim) in original (unnormalized) scale
+        """
+        
+        if len(self.streaming_buffer) == 0:
+            self.streaming_reset(condition_token, deterministic)
+
+        # Start from standard Normal at t=1
+        if deterministic:
+            action = torch.zeros(1, 1, self.action_dim, device=self.device, dtype=self.dtype)
+        else:
+            action = torch.randn(1, 1, self.action_dim, device=self.device, dtype=self.dtype)
+
+        # Pre-compute condition embedding
+        delay_emb = self.delay_emb(delay_steps.to(device=self.device, dtype=torch.long))
+        cond_emb = self.encode_condition(condition_token) + delay_emb
+        
+        dt = 1.0 / self.horizon
+        # Integrate dx/dt = -v_theta(x, t, cond) from t=1 -> 0
+        t_curr = (torch.arange(1, self.horizon + 1) * dt).clamp(max=1.0 - 1e-4).unsqueeze(-1) # [dt, 2dt, ..., 1]
+        t_emb = timestep_embedding(t_curr, self.config.t_embed_dim).unsqueeze(0).to(device=self.device, dtype=self.dtype)
+        noisy_actions = torch.cat(self.streaming_buffer, dim=1)
+        velocity = self.vector_field(noisy_actions, t_emb, cond_emb)
+        noisy_actions = noisy_actions - velocity * dt
+        self.streaming_buffer = list(noisy_actions.chunk(noisy_actions.size(1), dim=1))
+
+        out_action = self.streaming_buffer.pop(0)
+        self.streaming_buffer.append(action.clone())
+        return out_action.squeeze(1)
 
 # ---------------- Transformer + Flow-Matching Modules ----------------
 class TransformerFlowMatching(nn.Module):
@@ -646,7 +773,7 @@ class TransformerFlowMatching(nn.Module):
     - model internal action vector (batch_size, act_dim)
     """
 
-    def __init__(self, config, input_dim, output_dim):
+    def __init__(self, config:HVLAConfig, input_dim, output_dim):
         super().__init__()
         self.config = config
 

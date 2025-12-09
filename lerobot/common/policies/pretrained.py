@@ -156,7 +156,8 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
             model_dict = model.state_dict()
 
             # compact with recent transformers
-            if hasattr(model.model, "paligemma_with_expert") and not hasattr(model.model.paligemma_with_expert.paligemma.language_model, "model"):
+            if hasattr(model.model, "paligemma_with_expert") and hasattr(model.model.paligemma_with_expert.paligemma.language_model, "lm_head"):
+                print("detected old ckpt, converting to new format")
                 keys_to_change = [k for k in state_dict.keys() if "language_model.model." in k]
                 for k in keys_to_change:
                     new_k = k.replace("language_model.model.", "model.language_model.", 1)
