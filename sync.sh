@@ -1,15 +1,15 @@
-CKPT_PATH=outputs/train/2025-12-06/21-04-24_sim-v4.9-MoveGrasp/checkpoints/050000/pretrained_model
-DATA_PATH=sim-v9.0
+CKPT_PATH=outputs/train/2025-12-15/17-07-23_sim-v4.11/checkpoints/080000/pretrained_model
+DATA_PATH=sim-v4.11
 
 mkdir -p $CKPT_PATH
 # ssh ksyun "~/ads-cli cp /mnt/kpfs/chenxuchuan/sandbox/lerobot/$CKPT_PATH $aoss/cxc/pi0/ckpt/$DATA_PATH"
 # ~/ads-cli cp $aoss_in/cxc/pi0/ckpt/$DATA_PATH $CKPT_PATH 
-rsync -avP --info=progress2 --partial-dir=.rsync-partial --blocking-io ksyun:/mnt/kpfs/chenxuchuan/sandbox/lerobot/$CKPT_PATH $CKPT_PATH
+rsync -avP --info=progress2 --partial-dir=.rsync-partial --blocking-io ksyun:/mnt/kpfs/chenxuchuan/sandbox/lerobot/$CKPT_PATH $CKPT_PATH/..
 
 mkdir -p ./lerobot_data/$DATA_PATH/meta
 # ssh ksyun "~/ads-cli cp /mnt/kpfs/danshili/Workspace/lerobot/storage/data/lerobot/$DATA_PATH/meta $aoss/cxc/pi0/meta"
 # ~/ads-cli cp $aoss_in/cxc/pi0/meta ./lerobot_data/$DATA_PATH/meta
-rsync -avP --info=progress2 --partial-dir=.rsync-partial --blocking-io ksyun:/mnt/kpfs/chenxuchuan/sandbox/G1-VLA/$DATA_PATH/meta ./lerobot_data/$DATA_PATH/meta
+rsync -avP --info=progress2 --partial-dir=.rsync-partial --blocking-io ksyun:/mnt/kpfs/chenxuchuan/sandbox/G1-VLA/$DATA_PATH/meta ./lerobot_data/$DATA_PATH
 
 echo -e "TOKENIZERS_PARALLELISM=false python server.py \\" > run_server.sh 
 echo -e "   --policy.path=$CKPT_PATH \\" >> run_server.sh

@@ -597,16 +597,19 @@ class PI0FlowMatching(nn.Module):
         # Embed state
         state_emb = self.state_proj(state)
         state_emb = state_emb.to(dtype=torch.bfloat16)
-        embs.append(state_emb[:, None, :])
+        
+        if state_emb.ndim != 3:
+            state_emb = state_emb[:, None, :]
+        embs.append(state_emb)
         bsize = state_emb.shape[0]
         dtype = state_emb.dtype
         device = state_emb.device
 
-        state_mask = torch.ones(bsize, 1, dtype=torch.bool, device=device)
+        state_mask = torch.ones(bsize, state_emb.shape[1], dtype=torch.bool, device=device)
         pad_masks.append(state_mask)
 
         # Set attention masks so that image and language inputs do not attend to state or actions
-        att_masks += [1]
+        att_masks += [1] * state_emb.shape[1]
 
         # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = create_sinusoidal_pos_embedding(

@@ -22,7 +22,7 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 
 HOST = "0.0.0.0"
-PORT = "8001"
+PORT = "8002"
 
 def process_img(img):
     img = torch.from_numpy(img)
@@ -52,7 +52,7 @@ class ServerPolicy(_base_policy.BasePolicy):
             self.model.reset()
 
         action = self.model.get_action_chunk(observation).cpu().numpy()
-        print(action.round(2))
+        print("height:", action[:, 33].round(2))
         return {"actions": action }
     
 class ServerPolicyDual(_base_policy.BasePolicy):
@@ -76,7 +76,8 @@ class ServerPolicyDual(_base_policy.BasePolicy):
             self.model.reset()
 
         action = self.model.get_action_chunk(observation).cpu().numpy()
-        print(action.round(2))
+        # print(action.round(2))
+        print("height:", action[:, 33].round(2))
         return {"actions": action }
 
 @parser.wrap()

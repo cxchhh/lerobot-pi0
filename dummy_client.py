@@ -18,14 +18,13 @@ class DummyAgent:
         print(f"[{timestamp}] Resetting agent")
 
     def apply_action(self, action_dict: dict):
-        action = action_dict['actions']
-        print(f"action shape: {action.shape}")
+        action = action_dict
         # Simulate applying action to the robot
         timestamp = datetime.now().strftime("%Y-%m%d-%H:%M")
         # print(f"[{timestamp}] Applying action: {action}")
 
     def get_obs(self, reset: int = 0) -> dict:
-        obs_state = np.random.randn(65)
+        obs_state = np.random.randn(33)
         obs_img_head = (np.random.rand(224,400,3) * 255).astype(np.uint8)
         obs_img_right_wrist = (np.random.rand(224,224,3) * 255).astype(np.uint8)
 
@@ -39,7 +38,7 @@ class DummyAgent:
         return obs_dict
     
     def get_obs_fast(self) -> dict:
-        obs_state = np.random.randn(65)
+        obs_state = np.random.randn(33)
         obs_dict = {
             "observation.state": obs_state,
             "reset": 0
@@ -50,9 +49,10 @@ class DummyAgent:
 @dataclass
 class Args:
     host: str = "localhost"
-    port: int = 8001
+    port: int = 8002
 
-    action_horizon: int = 20
+    max_hz = 1
+    action_horizon: int = 5
 
 
 def main(args: Args) -> None:
@@ -70,10 +70,7 @@ def main(args: Args) -> None:
     _step = 0
     while True:
         t_start = time.time()
-        if _step % args.action_horizon == 0:
-            obs_dict = agent.get_obs()
-        else: 
-            obs_dict = agent.get_obs_fast()
+        obs_dict = agent.get_obs()
         
         action_dict = policy.infer(obs_dict)
         agent.apply_action(action_dict)
@@ -83,8 +80,9 @@ def main(args: Args) -> None:
         if t_start - last_log_time >= 0.5:
             print(f"Frequency: {(1 / np.mean(time_buf)):.2f} Hz")
             last_log_time = t_start
-
-        time.sleep(max(0.02 - (time.time() - t_start), 0))
+        
+        if time.time() - t_start < 0.02:
+            time.sleep(0.02 - (time.time() - t_start))
         _step += 1
 
 
