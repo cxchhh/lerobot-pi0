@@ -313,12 +313,17 @@ class PI0Policy(PreTrainedPolicy):
         if self.config.adapt_to_pi_aloha:
             batch[OBS_STATE] = self._pi_aloha_decode_state(batch[OBS_STATE])
 
+        if "action_prefix" in batch.keys():
+            batch[ACTION] = batch["action_prefix"]
         batch = self.normalize_inputs(batch)
 
         images, img_masks = self.prepare_images(batch)
         state = self.prepare_state(batch)
         lang_tokens, lang_masks = self.prepare_language(batch)
         action_prefix = batch.get("action_prefix", None)
+        if action_prefix is not None:
+            print(f"action_prefix: {action_prefix.shape}")
+            action_prefix = self.prepare_action(batch)
 
         actions = self.model.sample_actions(
             images, img_masks, lang_tokens, lang_masks, state, noise=noise, action_prefix=action_prefix
@@ -656,16 +661,17 @@ class PI0FlowMatching(nn.Module):
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
 
-        time_expanded = time[:, None, None].expand(-1, actions.shape[1], -1)
-        time_prefix_mask = self.random_prefix_mask(time_expanded)
-        time = (time_expanded * time_prefix_mask).squeeze(-1)
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
+        B, T, D = actions.shape
+        time_expanded = time[:, None, None].expand(-1, T, 1)
+        time_prefix_mask = self.random_prefix_mask(time_expanded)  # (B, T, 1)
+        time_masked = time_expanded * time_prefix_mask  # (B, T, 1)
+        x_t = time_masked * noise + (1.0 - time_masked) * actions  # (B, T, D)
+        u_t = (noise - actions) * time_prefix_mask  # (B, T, D)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images, img_masks, lang_tokens, lang_masks
         )
-        suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(state, x_t, time)
+        suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(state, x_t, time_masked.squeeze(-1))
 
         pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
@@ -687,32 +693,27 @@ class PI0FlowMatching(nn.Module):
         v_t = self.action_out_proj(suffix_out)
 
         losses = F.mse_loss(u_t, v_t, reduction="none")
+        losses = losses * time_prefix_mask
         return losses
     
     def random_prefix_mask(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         x: Tensor of shape (B, T, D)
         return:
-            masked_x: masked tensor
-            mask: mask tensor (B, T, 1), 1=keep, 0=masked
+            mask: (B, T, 1), 1 = suffix (to train), 0 = prefix (condition only)
         """
         B, T, D = x.shape
         device = x.device
 
-        # 每个 batch 随机生成一个 [0, T//2] 的长度
         prefix_lens = torch.randint(
             low=0,
             high=T // 2 + 1,
             size=(B,),
-            device=device
+            device=device,
         )
-
-        # 构造 mask
-        t_idx = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
-        mask = (t_idx >= prefix_lens.unsqueeze(1)).float()   # (B, T)
-        mask = mask.unsqueeze(-1)  # (B, T, 1)
-
-        return mask
+        t_idx = torch.arange(T, device=device)[None, :]   # (1, T)
+        mask_suffix = (t_idx >= prefix_lens[:, None]).float()  # (B, T)
+        return mask_suffix.unsqueeze(-1)  # (B, T, 1)
 
     def sample_actions(self, images, img_masks, lang_tokens, lang_masks, state, noise=None, action_prefix=None) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
@@ -748,9 +749,10 @@ class PI0FlowMatching(nn.Module):
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
-            expanded_time = time.expand(bsize)[None].expand(-1, self.config.n_action_steps)
+            expanded_time = time.clone().expand(bsize)[None].expand(-1, self.config.n_action_steps)
             if action_prefix is not None:
                 expanded_time[:, :action_prefix.shape[1]] = 0.0
+                x_t[:, :action_prefix.shape[1]] = action_prefix
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
