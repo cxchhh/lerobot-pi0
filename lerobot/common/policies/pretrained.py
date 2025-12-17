@@ -25,6 +25,8 @@ from huggingface_hub.errors import HfHubHTTPError
 from safetensors.torch import load_model as load_model_as_safetensor
 from safetensors.torch import save_model as save_model_as_safetensor
 from torch import Tensor, nn
+from transformers import __version__ as transformers_version
+from packaging import version
 
 from lerobot.common.utils.hub import HubMixin
 from lerobot.configs.policies import PreTrainedConfig
@@ -156,7 +158,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
             model_dict = model.state_dict()
 
             # compact with recent transformers
-            if hasattr(model.model, "paligemma_with_expert") and hasattr(model.model.paligemma_with_expert.paligemma.language_model, "lm_head"):
+            if hasattr(model.model, "paligemma_with_expert") and version.parse(transformers_version) >= version.parse("4.50"):
                 print("detected old ckpt, converting to new format")
                 keys_to_change = [k for k in state_dict.keys() if "language_model.model." in k]
                 for k in keys_to_change:
