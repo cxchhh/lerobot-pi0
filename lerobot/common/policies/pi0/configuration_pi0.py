@@ -29,7 +29,7 @@ class PI0Config(PreTrainedConfig):
     n_obs_steps: int = 1
     chunk_size: int = 50
     n_action_steps: int = 50
-    n_obs_states: int = 4
+    n_obs_states: int = 2
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -40,7 +40,7 @@ class PI0Config(PreTrainedConfig):
     )
 
     # Shorter state and action vectors will be padded
-    max_state_dim: int = 128
+    max_state_dim: int = 35
     max_action_dim: int = 32
 
     # Image preprocessing

@@ -318,9 +318,10 @@ class PI0Policy(PreTrainedPolicy):
         images, img_masks = self.prepare_images(batch)
         state = self.prepare_state(batch)
         lang_tokens, lang_masks = self.prepare_language(batch)
+        action_prefix = batch.get("action_prefix", None)
 
         actions = self.model.sample_actions(
-            images, img_masks, lang_tokens, lang_masks, state, noise=noise
+            images, img_masks, lang_tokens, lang_masks, state, noise=noise, action_prefix=action_prefix
         )
 
         # Unpad actions
@@ -589,7 +590,7 @@ class PI0FlowMatching(nn.Module):
         return embs, pad_masks, att_masks
 
     def embed_suffix(self, state, noisy_actions, timestep):
-        """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
+        """Embed state, noisy_actions, timestep (B, T) to prepare for Expert Gemma processing."""
         embs = []
         pad_masks = []
         att_masks = []
@@ -613,14 +614,15 @@ class PI0FlowMatching(nn.Module):
 
         # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = create_sinusoidal_pos_embedding(
-            timestep, self.config.proj_width, min_period=4e-3, max_period=4.0, device=device
-        )
+            timestep.view(-1), self.config.proj_width, min_period=4e-3, max_period=4.0, device=device
+        ).reshape(timestep.shape[0], timestep.shape[1], -1)
+
         time_emb = time_emb.type(dtype=dtype)
 
         # Fuse timestep + action information using an MLP
         action_emb = self.action_in_proj(noisy_actions)
 
-        time_emb = time_emb[:, None, :].expand_as(action_emb)
+        # time_emb = time_emb[:, None, :].expand_as(action_emb)
         action_time_emb = torch.cat([action_emb, time_emb], dim=2)
 
         action_time_emb = self.action_time_mlp_in(action_time_emb)
@@ -654,7 +656,9 @@ class PI0FlowMatching(nn.Module):
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
 
-        time_expanded = time[:, None, None]
+        time_expanded = time[:, None, None].expand(-1, actions.shape[1], -1)
+        time_prefix_mask = self.random_prefix_mask(time_expanded)
+        time = (time_expanded * time_prefix_mask).squeeze(-1)
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
@@ -684,8 +688,33 @@ class PI0FlowMatching(nn.Module):
 
         losses = F.mse_loss(u_t, v_t, reduction="none")
         return losses
+    
+    def random_prefix_mask(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        x: Tensor of shape (B, T, D)
+        return:
+            masked_x: masked tensor
+            mask: mask tensor (B, T, 1), 1=keep, 0=masked
+        """
+        B, T, D = x.shape
+        device = x.device
 
-    def sample_actions(self, images, img_masks, lang_tokens, lang_masks, state, noise=None) -> Tensor:
+        # 每个 batch 随机生成一个 [0, T//2] 的长度
+        prefix_lens = torch.randint(
+            low=0,
+            high=T // 2 + 1,
+            size=(B,),
+            device=device
+        )
+
+        # 构造 mask
+        t_idx = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
+        mask = (t_idx >= prefix_lens.unsqueeze(1)).float()   # (B, T)
+        mask = mask.unsqueeze(-1)  # (B, T, 1)
+
+        return mask
+
+    def sample_actions(self, images, img_masks, lang_tokens, lang_masks, state, noise=None, action_prefix=None) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = state.shape[0]
         device = state.device
@@ -693,6 +722,9 @@ class PI0FlowMatching(nn.Module):
         if noise is None:
             actions_shape = (bsize, self.config.n_action_steps, self.config.max_action_dim)
             noise = self.sample_noise(actions_shape, device)
+            if action_prefix is not None:
+                prefix_len = action_prefix.shape[1]
+                noise[:, :prefix_len] = action_prefix
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images, img_masks, lang_tokens, lang_masks
@@ -716,7 +748,9 @@ class PI0FlowMatching(nn.Module):
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
-            expanded_time = time.expand(bsize)
+            expanded_time = time.expand(bsize)[None].expand(-1, self.config.n_action_steps)
+            if action_prefix is not None:
+                expanded_time[:, :action_prefix.shape[1]] = 0.0
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
