@@ -364,11 +364,12 @@ class PI0Policy(PreTrainedPolicy):
             loss_dict["losses_after_in_ep_bound"] = losses.clone()
 
         # Remove padding
-        losses = losses[:, :, : self.config.max_action_dim]
+        losses = losses[:, :, : self.config.action_feature.shape[0]]
         loss_dict["losses_after_rm_padding"] = losses.clone()
 
         # For backward pass
-        loss = losses.mean()
+        den = (~actions_is_pad).sum().clamp_min(1) * losses.shape[-1]
+        loss = losses.sum() / den
         # For logging
         loss_dict["l2_loss"] = loss.item()
 
@@ -663,7 +664,8 @@ class PI0FlowMatching(nn.Module):
 
         B, T, D = actions.shape
         time_expanded = time[:, None, None].expand(-1, T, 1)
-        time_prefix_mask = self.random_prefix_mask(time_expanded)  # (B, T, 1)
+        # time_prefix_mask = self.random_prefix_mask(time_expanded)  # (B, T, 1)
+        time_prefix_mask = torch.ones_like(time_expanded)
         time_masked = time_expanded * time_prefix_mask  # (B, T, 1)
         x_t = time_masked * noise + (1.0 - time_masked) * actions  # (B, T, D)
         u_t = (noise - actions) * time_prefix_mask  # (B, T, D)
@@ -692,6 +694,7 @@ class PI0FlowMatching(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
 
+        assert all(time_prefix_mask.view(-1)) > 0.5 # no mask actually
         losses = F.mse_loss(u_t, v_t, reduction="none")
         losses = losses * time_prefix_mask
         return losses
