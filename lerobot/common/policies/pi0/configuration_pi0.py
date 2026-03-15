@@ -30,6 +30,7 @@ class PI0Config(PreTrainedConfig):
     chunk_size: int = 50
     n_action_steps: int = 50
     n_obs_states: int = 2
+    n_plan_steps: int = 0
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -143,6 +144,8 @@ class PI0Config(PreTrainedConfig):
 
     @property
     def action_delta_indices(self) -> list:
+        if self.n_plan_steps > 0:
+            return list(range(0, self.chunk_size * self.n_plan_steps, self.n_plan_steps))
         return list(range(self.chunk_size))
 
     @property

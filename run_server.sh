@@ -1,4 +1,4 @@
 TOKENIZERS_PARALLELISM=false python server.py \
-   --policy.path=outputs/train/2025-12-16/23-28-12_sim-v4.12/checkpoints/050000/pretrained_model \
-   --dataset.repo_id=lerobot_data/sim-v4.12 \
-   --dataset.root=./lerobot_data/sim-v4.12
+   --policy.path=outputs/train/2026-03-13/23-55-38_sim-v9.29/checkpoints/050000/pretrained_model \
+   --dataset.repo_id=G1-VLA/sim-v9.29 \
+   --dataset.root=../G1-VLA/sim-v9.29

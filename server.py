@@ -54,7 +54,6 @@ class ServerPolicy(_base_policy.BasePolicy):
             self.model.reset()
 
         action = self.model.get_action_chunk(observation).cpu().numpy()
-        print("height:", action[:, 33].round(2))
         return {"actions": action }
 
 @parser.wrap()
