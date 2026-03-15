@@ -399,13 +399,11 @@ def encode_video_frames_from_mem(
         for input_image in imgs_data:
             input_image = Image.fromarray(input_image).convert("RGB")
             input_frame = av.VideoFrame.from_image(input_image)
-            packet = output_stream.encode(input_frame)
-            if packet:
+            for packet in output_stream.encode(input_frame):
                 output.mux(packet)
 
         # Flush the encoder
-        packet = output_stream.encode()
-        if packet:
+        for packet in output_stream.encode():
             output.mux(packet)
 
     # Reset logging level
