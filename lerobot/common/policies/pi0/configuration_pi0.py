@@ -29,7 +29,7 @@ class PI0Config(PreTrainedConfig):
     n_obs_steps: int = 1
     chunk_size: int = 50
     n_action_steps: int = 50
-    n_obs_states: int = 2
+    n_obs_states: int = 1
     n_plan_steps: int = 0
 
     normalization_mapping: dict[str, NormalizationMode] = field(
