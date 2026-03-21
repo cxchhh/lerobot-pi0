@@ -138,14 +138,13 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     # train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator)
     train_dataset = dataset
     val_dataset = test_dataset
-    breakpoint()
     
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None and rank == 0:
         eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
 
     print(rank, "load policy into", device)
-    policy = make_policy(cfg=cfg.policy, ds_meta=dataset.meta)
+    policy = make_policy(cfg=cfg.policy, ds_meta=train_dataset.meta)
     policy.to(device)
     policy = DDP(policy, device_ids=[rank])
 
@@ -179,10 +178,9 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
         "update_s": AverageMeter("updt_s", ":.3f"),
         "dataloading_s": AverageMeter("data_s", ":.3f"),
     }
-    train_tracker = MetricsTracker(cfg.batch_size * world_size, dataset.num_frames, dataset.num_episodes, train_metrics, initial_step=step)
+    train_tracker = MetricsTracker(cfg.batch_size * world_size, train_dataset.num_frames, train_dataset.num_episodes, train_metrics, initial_step=step)
 
     for _ in range(step, cfg.steps):
-        # breakpoint()
         train_sampler.set_epoch(step)
         start_time = time.perf_counter()
         batch = next(dl_iter)

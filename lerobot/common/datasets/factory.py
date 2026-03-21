@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+from pathlib import Path
 from pprint import pformat
 
 import torch
@@ -101,13 +102,12 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         try:
             test_dataset = LeRobotDataset(
                 cfg.dataset.repo_id,
-                root=cfg.dataset.root,
+                root=Path(cfg.dataset.root) / "test" / cfg.dataset.repo_id.split("/")[-1],
                 episodes=cfg.dataset.episodes,
                 delta_timestamps=delta_timestamps,
                 image_transforms=image_transforms,
                 revision=cfg.dataset.revision,
                 video_backend=cfg.dataset.video_backend,
-                split="test"
             )
         except Exception as e:
             import traceback; traceback.print_exc()
