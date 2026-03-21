@@ -252,6 +252,7 @@ class LeRobotDatasetMetadata:
         episode_length: int,
         episode_tasks: list[str],
         episode_stats: dict[str, dict],
+        test_portion: float = 0.05,
     ) -> None:
         self.info["total_episodes"] += 1
         self.info["total_frames"] += episode_length
@@ -260,7 +261,14 @@ class LeRobotDatasetMetadata:
         if chunk >= self.total_chunks:
             self.info["total_chunks"] += 1
 
-        self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
+        n_test_samples = int(self.info['total_episodes'] * test_portion)
+        if n_test_samples > 0:
+            self.info["splits"] = {
+                "train": f"0:{self.info['total_episodes'] - n_test_samples}",
+                "test": f"{self.info['total_episodes'] - n_test_samples}:{self.info['total_episodes']}"
+            }
+        else:
+            self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
         self.info["total_videos"] += len(self.video_keys)
         if len(self.video_keys) > 0:
             self.update_video_info()
