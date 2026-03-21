@@ -132,10 +132,13 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     torch.backends.cuda.matmul.allow_tf32 = True
     cfg.policy.device = f"cuda:{rank}"
 
-    dataset = make_dataset(cfg)
-    train_size = int(0.95 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator)
+    dataset, test_dataset = make_dataset(cfg)
+    # train_size = int(0.95 * len(dataset))
+    # val_size = len(dataset) - train_size
+    # train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator)
+    train_dataset = dataset
+    val_dataset = test_dataset
+    breakpoint()
     
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None and rank == 0:

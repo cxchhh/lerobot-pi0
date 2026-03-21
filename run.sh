@@ -1,25 +1,17 @@
-NUM_GPUS=4
+NUM_GPUS=1
 export MASTER_ADDR="localhost"
-export MASTER_PORT="29504"
-export ID=grasp_ycb_box_camera_ready_isaacsim
-torchrun \
-  --nproc_per_node=$NUM_GPUS \
-  --master_port=$MASTER_PORT \
-  lerobot/scripts/train_ddp.py \
-  --dataset.repo_id=lerobot/$ID \
-  --dataset.root=/mnt/kpfs/danshili/Workspace/lerobot/storage/data/lerobot/$ID \
+export MASTER_PORT="29514"
+export ID=sim-v9.36
+export RANK=0
+export WORLD_SIZE=1
+
+python lerobot/scripts/train_ddp.py \
+  --dataset.repo_id=G1-VLA/$ID \
+  --dataset.root=/mnt/kpfs/chenxuchuan/sandbox/G1-VLA/$ID \
   --job_name=$ID \
-  --wandb.enable=false \
   --batch_size=16 \
-  --steps=120000 \
-  --policy.path=$HOME/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch \
+  --wandb.enable=false \
+  --steps=50000 \
+  --policy.path=/mnt/kpfs/chenxuchuan/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch_plan \
   # --resume=true \
-  # --config_path=outputs/train/2025-07-18/12-42-46_grasp_ycb_box_absolute_textured_small4/checkpoints/050000/pretrained_model \
-  
- 
-
-    
- 
-  
-
-
+  # --config_path=outputs/train/2026-03-20/20-50-37_sim-v9.35/checkpoints/050000/pretrained_model

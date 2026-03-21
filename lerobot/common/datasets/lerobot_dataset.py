@@ -352,6 +352,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         force_cache_sync: bool = False,
         download_videos: bool = True,
         video_backend: str | None = None,
+        split:str = "train",
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -464,6 +465,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.revision = revision if revision else CODEBASE_VERSION
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
         self.delta_indices = None
+        self.split = split
 
         # Unused attributes
         self.image_writer = None
@@ -608,10 +610,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
         """hf_dataset contains all the observations, states, actions, rewards, etc."""
         if self.episodes is None:
             path = str(self.root / "data")
-            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+            hf_dataset = load_dataset("parquet", data_dir=path, split=self.split)
         else:
             files = [str(self.root / self.meta.get_data_file_path(ep_idx)) for ep_idx in self.episodes]
-            hf_dataset = load_dataset("parquet", data_files=files, split="train")
+            hf_dataset = load_dataset("parquet", data_files=files, split=self.split)
 
         # TODO(aliberts): hf_dataset.set_format("torch")
         hf_dataset.set_transform(hf_transform_to_torch)
@@ -821,7 +823,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         self.episode_buffer["size"] += 1
 
-    def save_episode(self, episode_data: dict | None = None) -> None:
+    def save_episode(self, episode_data: dict | None = None, split="train") -> None:
         """
         This will save to disk the current episode in self.episode_buffer.
 
@@ -861,7 +863,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             episode_buffer[key] = np.stack(episode_buffer[key])
 
         self._wait_image_writer()
-        self._save_episode_table(episode_buffer, episode_index)
+        self._save_episode_table(episode_buffer, episode_index, split)
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
         if len(self.meta.video_keys) > 0:
@@ -896,9 +898,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
 
-    def _save_episode_table(self, episode_buffer: dict, episode_index: int) -> None:
+    def _save_episode_table(self, episode_buffer: dict, episode_index: int, split: str) -> None:
         episode_dict = {key: episode_buffer[key] for key in self.hf_features}
-        ep_dataset = datasets.Dataset.from_dict(episode_dict, features=self.hf_features, split="train")
+        ep_dataset = datasets.Dataset.from_dict(episode_dict, features=self.hf_features, split=split)
         ep_dataset = embed_images(ep_dataset)
         self.hf_dataset = concatenate_datasets([self.hf_dataset, ep_dataset])
         self.hf_dataset.set_transform(hf_transform_to_torch)
