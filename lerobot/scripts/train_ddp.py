@@ -86,22 +86,13 @@ def sanitize_for_wandb(log_dict):
             pass  # 忽略不支持的
     return safe_dict
 
-def eval_on_val_dataset(cfg, model, val_dataset, device, max_batches=10):
+def eval_on_val_dataset(cfg, model, val_loader, device, max_batches=100):
     model.eval()
     total_loss = 0.0
     total_samples = 0
 
-    val_loader = DataLoader(
-            val_dataset,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            num_workers=cfg.num_workers,
-            pin_memory=True,
-            drop_last=False
-        )
-
-    limited_loader = itertools.islice(val_loader, max_batches)
-    for batch in tqdm.tqdm(limited_loader, total=max_batches):
+    limited_loader = itertools.islice(val_loader, len(val_loader))
+    for batch in tqdm.tqdm(limited_loader, total=len(val_loader)):
         batch={
             key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
             for key, value in batch.items()
@@ -159,6 +150,18 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     )
     dl_iter = cycle(train_loader)
 
+    val_loader = None
+    if rank == 0 and cfg.eval_freq > 0:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=cfg.batch_size,
+            shuffle=False,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+            drop_last=False,
+            persistent_workers=(cfg.num_workers > 0),
+        )
+
     optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy.module)
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
     step = 0
@@ -215,7 +218,7 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
                 # step_id = get_step_identifier(step, cfg.steps)
                 with torch.no_grad():
                     with torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
-                        eval_info = eval_on_val_dataset(cfg, policy.module, val_dataset, device)
+                        eval_info = eval_on_val_dataset(cfg, policy.module, val_loader, device)
 
                 logging.info(f"[Eval] Step {step}: val_loss = {eval_info['val_loss']:.4f}")
                 if wandb_logger:
