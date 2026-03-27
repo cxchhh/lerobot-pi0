@@ -110,7 +110,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 video_backend=cfg.dataset.video_backend,
             )
         except Exception as e:
-            import traceback; traceback.print_exc()
+            # import traceback; traceback.print_exc()
             test_dataset = None
     else:
         raise NotImplementedError("The MultiLeRobotDataset isn't supported for now.")

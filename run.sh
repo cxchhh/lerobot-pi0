@@ -1,18 +1,19 @@
 NUM_GPUS=1
 export MASTER_ADDR="localhost"
 export MASTER_PORT="29514"
-export ID=sim-v9.36_shugui
+export ID=hetao3456
 export RANK=0
 export WORLD_SIZE=1
 
 python lerobot/scripts/train_ddp.py \
-  --dataset.repo_id=lerobot_dataset/$ID \
-  --dataset.root=/home/chenxuchuan/sandbox/wholebody_grasp/lerobot_dataset/sim-v9.36_shugui \
+  --dataset.repo_id=lerobot_data/$ID  \
+  --dataset.root=/home/chenxuchuan/sandbox/lerobot/lerobot_data/$ID \
   --job_name=$ID \
   --batch_size=16 \
   --wandb.enable=false \
   --steps=50000 \
   --resume=true \
   --config_path=outputs/train/2026-03-20/20-50-37_sim-v9.35/checkpoints/050000/pretrained_model
-  # --policy.path=/home/chenxuchuan/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch \
+    # --policy.path=/home/chenxuchuan/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch \
+  
   

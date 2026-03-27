@@ -260,15 +260,8 @@ class LeRobotDatasetMetadata:
         chunk = self.get_episode_chunk(episode_index)
         if chunk >= self.total_chunks:
             self.info["total_chunks"] += 1
-
-        n_test_samples = int(self.info['total_episodes'] * test_portion)
-        if n_test_samples > 0:
-            self.info["splits"] = {
-                "train": f"0:{self.info['total_episodes'] - n_test_samples}",
-                "test": f"{self.info['total_episodes'] - n_test_samples}:{self.info['total_episodes']}"
-            }
-        else:
-            self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
+            
+        self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
         self.info["total_videos"] += len(self.video_keys)
         if len(self.video_keys) > 0:
             self.update_video_info()
@@ -823,7 +816,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         self.episode_buffer["size"] += 1
 
-    def save_episode(self, episode_data: dict | None = None, split="train") -> None:
+    def save_episode(self, episode_data: dict | None = None) -> None:
         """
         This will save to disk the current episode in self.episode_buffer.
 
@@ -863,7 +856,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             episode_buffer[key] = np.stack(episode_buffer[key])
 
         self._wait_image_writer()
-        self._save_episode_table(episode_buffer, episode_index, split)
+        self._save_episode_table(episode_buffer, episode_index)
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
         if len(self.meta.video_keys) > 0:
@@ -898,9 +891,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
 
-    def _save_episode_table(self, episode_buffer: dict, episode_index: int, split: str) -> None:
+    def _save_episode_table(self, episode_buffer: dict, episode_index: int) -> None:
         episode_dict = {key: episode_buffer[key] for key in self.hf_features}
-        ep_dataset = datasets.Dataset.from_dict(episode_dict, features=self.hf_features, split=split)
+        ep_dataset = datasets.Dataset.from_dict(episode_dict, features=self.hf_features)
         ep_dataset = embed_images(ep_dataset)
         self.hf_dataset = concatenate_datasets([self.hf_dataset, ep_dataset])
         self.hf_dataset.set_transform(hf_transform_to_torch)
