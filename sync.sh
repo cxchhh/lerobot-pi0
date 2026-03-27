@@ -1,5 +1,5 @@
-CKPT_PATH=outputs/train/2026-03-20/20-50-37_sim-v9.35/checkpoints/050000/pretrained_model
-DATA_PATH=sim-v9.35
+CKPT_PATH=outputs/train/2026-03-24/16-51-05_sim-v9.38/checkpoints/050000/pretrained_model
+DATA_PATH=sim-v9.38
 
 mkdir -p $CKPT_PATH
 # ssh ksyun "~/ads-cli cp /mnt/kpfs/chenxuchuan/sandbox/lerobot/$CKPT_PATH $aoss/cxc/pi0/ckpt/$DATA_PATH"

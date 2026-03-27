@@ -124,11 +124,14 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
     cfg.policy.device = f"cuda:{rank}"
 
     dataset, test_dataset = make_dataset(cfg)
-    # train_size = int(0.95 * len(dataset))
-    # val_size = len(dataset) - train_size
-    # train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator)
-    train_dataset = dataset
-    val_dataset = test_dataset
+    if test_dataset is None:
+        train_size = int(0.95 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator)
+        train_dataset = dataset
+    else:
+        train_dataset = dataset
+        val_dataset = test_dataset
     
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None and rank == 0:
