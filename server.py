@@ -49,6 +49,9 @@ class ServerPolicy(_base_policy.BasePolicy):
         observation["task_index"] = torch.tensor(0).unsqueeze(0).to(self.device)
         if "action_prefix" in obs_dict.keys():
             observation["action_prefix"] = torch.tensor(np.array(obs_dict['action_prefix'])).unsqueeze(0).float().to(self.device)
+        if "delay" in obs_dict.keys():
+            observation["delay"] = torch.tensor(obs_dict['delay']).unsqueeze(0).to(self.device)
+            print(observation["delay"])
             
         if obs_dict['reset']:
             self.model.reset()
@@ -90,7 +93,6 @@ def main_wrapper(cfg: TrainPipelineConfig):
     print(f"Starting server on {HOST}:{PORT}")
     policy_server.serve_forever()
     
-
 
 if __name__ == '__main__':
     init_logging()

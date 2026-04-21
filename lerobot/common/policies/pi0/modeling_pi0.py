@@ -51,6 +51,7 @@ policy = Pi0Policy.from_pretrained("lerobot/pi0")
 
 import math
 from collections import deque
+from typing import Optional
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -93,6 +94,42 @@ def sample_beta(alpha, beta, bsize, device):
     gamma1 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / alpha)
     gamma2 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / beta)
     return gamma1 / (gamma1 + gamma2)
+
+
+def get_prefix_weights(
+    start: int,
+    end: int,
+    total: int,
+    schedule: str = "exp",
+    *,
+    device: Optional[torch.device] = None,
+    dtype: torch.dtype = torch.float32,
+) -> Tensor:
+    """RTC soft mask **W**（论文 §3.2 / Eq.5 思想），与 PI `real-time-chunking-kinetix` 一致。
+
+    - ``start``：推理延迟 **d**，下标 ``[0, start)`` 对上一 chunk 全权重（冻结区）。
+    - ``end``：**H−s**（exclusive），``i >= end`` 处权重为 0（与上一 chunk 无重叠的尾部）。
+    - ``total``：预测步数 **H**（chunk 长度）。
+
+    指数 schedule：先线性插值再 ``w * expm1(w)/(e-1)``，与参考 Jax 实现逐元素一致。
+    """
+    dev = device or torch.device("cpu")
+    start = min(start, end)
+    ar = torch.arange(total, device=dev)
+    if schedule == "ones":
+        return torch.ones(total, dtype=dtype, device=dev)
+    if schedule == "zeros":
+        return (ar < start).to(dtype=dtype)
+    if schedule in ("linear", "exp"):
+        i = torch.arange(total, dtype=torch.float32, device=dev)
+        denom = end - start + 1
+        if denom <= 0:
+            raise ValueError(f"Invalid start={start}, end={end} (need end >= start - 1 for denom>0)")
+        w = (((start - 1) - i) / denom + 1).clamp(0.0, 1.0)
+        if schedule == "exp":
+            w = w * torch.expm1(w) / (math.e - 1.0)
+        return torch.where(ar >= end, torch.zeros_like(w), w)
+    raise ValueError(f"Unknown schedule {schedule}")
 
 
 def make_att_2d_masks(pad_masks, att_masks):
@@ -146,7 +183,7 @@ def resize_with_pad(img, width, height, pad_value=-1):
     pad_width = max(0, int(width - resized_width))
 
     # pad on left and top of image
-    padded_img = F.pad(resized_img, (pad_width, 0, pad_height, 0), value=pad_value)
+    padded_img = F.pad(resized_img, (0, pad_width, 0, pad_height), value=pad_value)
     return padded_img
 
 
@@ -261,7 +298,7 @@ class PI0Policy(PreTrainedPolicy):
         return self.parameters()
 
     @torch.no_grad
-    def select_action(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
+    def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         """Select a single action given environment observations.
 
         This method wraps `select_actions` in order to return one action at a time for execution in the
@@ -283,7 +320,7 @@ class PI0Policy(PreTrainedPolicy):
             lang_tokens, lang_masks = self.prepare_language(batch)
 
             actions = self.model.sample_actions(
-                images, img_masks, lang_tokens, lang_masks, state, noise=noise
+                images, img_masks, lang_tokens, lang_masks, state, noise=None
             )
 
             # Unpad actions
@@ -301,7 +338,7 @@ class PI0Policy(PreTrainedPolicy):
         return self._action_queue.popleft()
     
     @torch.no_grad
-    def get_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
+    def get_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
         """Select a single action given environment observations.
 
         This method wraps `select_actions` in order to return full action chunking for execution in the
@@ -312,10 +349,15 @@ class PI0Policy(PreTrainedPolicy):
 
         if self.config.adapt_to_pi_aloha:
             batch[OBS_STATE] = self._pi_aloha_decode_state(batch[OBS_STATE])
-
+        
+        if "delay" in batch.keys():
+            delay = batch["delay"].reshape(-1)[0].item()
+        else:
+            delay = 0
         if "action_prefix" in batch.keys():
             batch[ACTION] = batch["action_prefix"]
         batch = self.normalize_inputs(batch)
+        
 
         images, img_masks = self.prepare_images(batch)
         state = self.prepare_state(batch)
@@ -324,9 +366,11 @@ class PI0Policy(PreTrainedPolicy):
         if action_prefix is not None:
             print(f"action_prefix: {action_prefix.shape}")
             action_prefix = self.prepare_action(batch)
+        
 
         actions = self.model.sample_actions(
-            images, img_masks, lang_tokens, lang_masks, state, noise=noise, action_prefix=action_prefix
+            images, img_masks, lang_tokens, lang_masks, state, noise=None, action_prefix=action_prefix,
+            rtc_inference_delay=delay
         )
 
         # Unpad actions
@@ -334,6 +378,7 @@ class PI0Policy(PreTrainedPolicy):
         actions = actions[:, :, :original_action_dim]
 
         actions = self.unnormalize_outputs({"action": actions})["action"]
+        # print(actions[0, :, 2])
 
         if self.config.adapt_to_pi_aloha:
             actions = self._pi_aloha_encode_actions(actions)
@@ -718,13 +763,34 @@ class PI0FlowMatching(nn.Module):
         mask_suffix = (t_idx >= prefix_lens[:, None]).float()  # (B, T)
         return mask_suffix.unsqueeze(-1)  # (B, T, 1)
 
-    def sample_actions(self, images, img_masks, lang_tokens, lang_masks, state, noise=None, action_prefix=None) -> Tensor:
-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+    def sample_actions(
+        self,
+        images,
+        img_masks,
+        lang_tokens,
+        lang_masks,
+        state,
+        noise=None,
+        action_prefix=None,
+        rtc_inference_delay: int = 0,
+        rtc_prefix_attention_horizon: Optional[int] = None,
+        rtc_max_guidance_weight: float = 1.0,
+    ) -> Tensor:
+        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors).
+
+        **RTC（Real-Time Chunking）**：仅当 ``action_prefix`` 非空时启用——ΠGDM 伴随校正（论文 §3；PI 参考实现）。
+
+        Args:
+            rtc_inference_delay: 论文 **d**，``start``：下标 ``< d`` 的 soft mask 为全 1。
+            rtc_prefix_attention_horizon: 论文 **H−s**（exclusive **end**），``i >= end`` 权重为 0；
+                ``None`` 时取 ``n_action_steps``（整段上按 schedule 衰减，无尾部硬截断）。
+        """
         bsize = state.shape[0]
         device = state.device
+        n_act = self.config.n_action_steps
 
         if noise is None:
-            actions_shape = (bsize, self.config.n_action_steps, self.config.max_action_dim)
+            actions_shape = (bsize, n_act, self.config.max_action_dim)
             noise = self.sample_noise(actions_shape, device)
             if action_prefix is not None:
                 prefix_len = action_prefix.shape[1]
@@ -736,7 +802,7 @@ class PI0FlowMatching(nn.Module):
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
-        # Compute image and language key value cache
+        # OpenPI: prefix KV cache（与 denoise 中 [None, suffix] 配套）
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks,
             position_ids=prefix_position_ids,
@@ -751,22 +817,27 @@ class PI0FlowMatching(nn.Module):
 
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        use_rtc = action_prefix is not None
+
         while time >= -dt / 2:
-            expanded_time = time.clone().expand(bsize)[None].expand(-1, self.config.n_action_steps)
-            if action_prefix is not None:
-                expanded_time[:, :action_prefix.shape[1]] = 0.0
-                x_t[:, :action_prefix.shape[1]] = action_prefix
+            # 与 PI `realtime_action` / 论文一致：整段 chunk 共用同一流时间 τ（标量 `time` 扩到每步）。
+            # 切勿对 prefix 单独设 τ=0：训练时全程为同一 τ，混用 τ 会 OOD，suffix 速度场易塌成 ~0。
+            expanded_time = time.expand(bsize, n_act)
+
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
                 past_key_values,
                 x_t,
                 expanded_time,
+                action_prefix=action_prefix if use_rtc else None,
+                rtc_inference_delay=rtc_inference_delay,
+                rtc_prefix_attention_horizon=rtc_prefix_attention_horizon,
+                rtc_max_guidance_weight=rtc_max_guidance_weight,
             )
 
-            # Euler step
-            x_t += dt * v_t
-            time += dt
+            x_t = x_t + dt * v_t
+            time = time + dt
         return x_t
 
     def denoise_step(
@@ -776,8 +847,35 @@ class PI0FlowMatching(nn.Module):
         past_key_values,
         x_t,
         timestep,
-    ):
-        """Apply one denoising step of the noise `x_t` at a given timestep."""
+        action_prefix: Optional[Tensor] = None,
+        rtc_inference_delay: int = 0,
+        rtc_prefix_attention_horizon: Optional[int] = None,
+        rtc_max_guidance_weight: float = 1.0,
+    ) -> Tensor:
+        """一步去噪。``action_prefix is None``：标准速度场；否则额外做 RTC 伴随校正（需在 enable_grad 下）。"""
+        if action_prefix is None:
+            return self._denoise_step_base(state, prefix_pad_masks, past_key_values, x_t, timestep)
+        return self._denoise_step_rtc(
+            state,
+            prefix_pad_masks,
+            past_key_values,
+            x_t,
+            timestep,
+            action_prefix,
+            rtc_inference_delay,
+            rtc_prefix_attention_horizon,
+            rtc_max_guidance_weight,
+        )
+
+    def _denoise_step_base(
+        self,
+        state,
+        prefix_pad_masks,
+        past_key_values,
+        x_t,
+        timestep,
+    ) -> Tensor:
+        """标准推理一步（无 RTC），与 OpenPI suffix + KV cache 一致。"""
         suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(state, x_t, timestep)
 
         suffix_len = suffix_pad_masks.shape[1]
@@ -803,5 +901,80 @@ class PI0FlowMatching(nn.Module):
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.n_action_steps :]
         suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
-        return v_t
+        return self.action_out_proj(suffix_out)
+
+    def _denoise_step_rtc(
+        self,
+        state,
+        prefix_pad_masks,
+        past_key_values,
+        x_t,
+        timestep,
+        action_prefix: Tensor,
+        rtc_inference_delay: int,
+        rtc_prefix_attention_horizon: Optional[int],
+        rtc_max_guidance_weight: float,
+    ) -> Tensor:
+        """RTC：对 ``∂(x_t + v(1-t))/∂x_t`` 做 VJP，把预测速度拉向已执行 prefix（仅推理、有 prefix 时）。"""
+        chunk_size = self.config.n_action_steps
+        plen = action_prefix.shape[1]
+
+        with torch.enable_grad():
+            x_in = x_t.clone().detach().requires_grad_(True)
+            suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(state, x_in, timestep)
+
+            suffix_len = suffix_pad_masks.shape[1]
+            batch_size = prefix_pad_masks.shape[0]
+            prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(batch_size, suffix_len, prefix_pad_masks.shape[1])
+            suffix_att_2d_masks = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
+            full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+
+            prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+            position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+
+            outputs_embeds, _ = self.paligemma_with_expert.forward(
+                attention_mask=full_att_2d_masks,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=self.config.use_cache,
+                fill_kv_cache=False,
+            )
+            suffix_out = outputs_embeds[1][:, -chunk_size:].to(dtype=torch.float32)
+            v_model = self.action_out_proj(suffix_out)
+
+            # ``end`` = 论文中 H−s（exclusive）；未指定时用 H，与 PI 参考里 end==total 语义一致。
+            end = rtc_prefix_attention_horizon if rtc_prefix_attention_horizon is not None else chunk_size
+            w = get_prefix_weights(
+                rtc_inference_delay,
+                end,
+                chunk_size,
+                "exp",
+                device=x_in.device,
+                dtype=torch.float32,
+            )
+            weights = w[None, :, None].expand_as(x_in)
+
+            # ΠGDM：目标相对 **估计终态** Â¹ = x + v(1−τ)，不是相对 x（论文式 2–3；PI `pinv_corrected_velocity`）。
+            x_hat = x_in + v_model * (1 - timestep)
+            error = torch.zeros_like(x_in)
+            error[:, :plen] = (action_prefix[:, :plen] - x_hat[:, :plen]) * weights[:, :plen]
+
+            pinv_correction = torch.autograd.grad(
+                outputs=x_hat,
+                inputs=x_in,
+                grad_outputs=error,
+                retain_graph=False,
+                create_graph=False,
+                only_inputs=True,
+            )[0]
+
+            inv_r2 = (timestep**2 + (1 - timestep) ** 2) / ((1 - timestep) ** 2 + 1e-6)
+            c = torch.nan_to_num((1 - timestep) / timestep, posinf=rtc_max_guidance_weight)
+            gw = torch.minimum(
+                c * inv_r2,
+                torch.tensor(rtc_max_guidance_weight, device=x_in.device, dtype=c.dtype),
+            )
+            out = v_model + gw * pinv_correction
+
+        return out.detach()

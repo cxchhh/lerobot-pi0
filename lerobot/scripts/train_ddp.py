@@ -86,13 +86,13 @@ def sanitize_for_wandb(log_dict):
             pass  # 忽略不支持的
     return safe_dict
 
-def eval_on_val_dataset(cfg, model, val_loader, device, max_batches=100):
+def eval_on_val_dataset(cfg, model, val_loader, device, max_batches=1000):
     model.eval()
     total_loss = 0.0
     total_samples = 0
-
-    limited_loader = itertools.islice(val_loader, len(val_loader))
-    for batch in tqdm.tqdm(limited_loader, total=len(val_loader)):
+    val_len = min(len(val_loader), max_batches)
+    limited_loader = itertools.islice(val_loader, val_len)
+    for batch in tqdm.tqdm(limited_loader, total=val_len):
         batch={
             key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
             for key, value in batch.items()

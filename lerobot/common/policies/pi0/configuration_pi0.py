@@ -154,4 +154,4 @@ class PI0Config(PreTrainedConfig):
 
     @property
     def state_delta_indices(self) -> list:
-        return list(range(-self.n_obs_states+1, 1))
+        return list(range(-(self.n_obs_states-1)*self.n_plan_steps, 1, self.n_plan_steps))

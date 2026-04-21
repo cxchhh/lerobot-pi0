@@ -49,7 +49,7 @@ class DummyAgent:
 @dataclass
 class Args:
     host: str = "localhost"
-    port: int = 8002
+    port: int = 8002  # matches server.py PORT
 
     max_hz = 1
     action_horizon: int = 5
@@ -66,14 +66,15 @@ def main(args: Args) -> None:
     last_log_time = time.time()
     agent.reset()
     time_buf = deque(maxlen=100)
-    policy.infer(agent.get_obs(reset=1))
+    policy.infer(agent.get_obs(reset=1))  # initial reset, server returns {"actions": ...}
     _step = 0
     while True:
         t_start = time.time()
         obs_dict = agent.get_obs()
         
-        action_dict = policy.infer(obs_dict)
-        agent.apply_action(action_dict)
+        result = policy.infer(obs_dict)
+        actions = result.get("actions", result) if isinstance(result, dict) else result
+        agent.apply_action(actions)
         
 
         time_buf.append(time.time() - t_start)

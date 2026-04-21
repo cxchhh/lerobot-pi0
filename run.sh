@@ -12,15 +12,9 @@ python lerobot/scripts/train_ddp.py \
   --batch_size=16 \
   --wandb.enable=false \
   --steps=50000 \
-<<<<<<< HEAD
   --eval_freq=100 \
   --policy.path=/mnt/kpfs/chenxuchuan/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch_plan \
   # --resume=true \
   # --config_path=outputs/train/2026-03-20/20-50-37_sim-v9.35/checkpoints/050000/pretrained_model
-=======
-  --resume=true \
-  --config_path=outputs/train/2026-03-20/20-50-37_sim-v9.35/checkpoints/050000/pretrained_model
-    # --policy.path=/home/chenxuchuan/.cache/openpi/openpi-assets/checkpoints/pi0_base_pytorch \
->>>>>>> aa36e709462c8d039372a0eebf63e59bb96fe0bc
   
   

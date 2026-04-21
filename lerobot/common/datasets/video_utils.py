@@ -63,11 +63,13 @@ def decode_video_frames(
     if backend is None:
         backend = get_safe_default_codec()
     if backend == "torchcodec":
-        try:
-            return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
-        except Exception as e:
-            traceback.print_exc()
-            print("error decoding", video_path)
+        for attempt in range(3):
+            try:
+                return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+            except Exception as e:
+                logging.warning(f"torchcodec decode failed (attempt {attempt+1}/3): {e}, video: {video_path}")
+        logging.warning(f"torchcodec failed 3 times, falling back to pyav: {video_path}")
+        return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, "pyav")
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:
