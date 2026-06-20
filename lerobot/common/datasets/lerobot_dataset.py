@@ -346,6 +346,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         download_videos: bool = True,
         video_backend: str | None = None,
         split:str = "train",
+        item_transform: Callable | None = None,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -452,6 +453,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.repo_id = repo_id
         self.root = Path(root) if root else HF_LEROBOT_HOME / repo_id
         self.image_transforms = image_transforms
+        self.item_transform = item_transform
         self.delta_timestamps = delta_timestamps
         self.episodes = episodes
         self.tolerance_s = tolerance_s
@@ -734,6 +736,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # item["task_index"] = torch.tensor(0).to(item['action'].device)
         task_idx = item["task_index"].item() # no index
         item["task"] = self.meta.tasks[task_idx]
+
+        if self.item_transform is not None:
+            item = self.item_transform(item)
 
         return item
 

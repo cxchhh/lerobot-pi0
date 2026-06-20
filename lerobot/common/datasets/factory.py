@@ -85,6 +85,12 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
     )
 
+    item_transform = None
+    if getattr(cfg.dataset, "item_transform_path", None):
+        import importlib
+        mod_path, func_name = cfg.dataset.item_transform_path.split(":")
+        item_transform = getattr(importlib.import_module(mod_path), func_name)
+
     if isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
@@ -98,6 +104,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             image_transforms=image_transforms,
             revision=cfg.dataset.revision,
             video_backend=cfg.dataset.video_backend,
+            item_transform=item_transform,
         )
         try:
             test_dataset = LeRobotDataset(
@@ -108,6 +115,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 image_transforms=image_transforms,
                 revision=cfg.dataset.revision,
                 video_backend=cfg.dataset.video_backend,
+                item_transform=item_transform,
             )
         except Exception as e:
             # import traceback; traceback.print_exc()

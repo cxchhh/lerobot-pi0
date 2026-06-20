@@ -37,6 +37,12 @@ class DatasetConfig:
     revision: str | None = None
     use_imagenet_stats: bool = True
     video_backend: str = field(default_factory=get_safe_default_codec)
+    # Optional per-item transform applied at the END of LeRobotDataset.__getitem__,
+    # after delta-timestamp queries and video decoding.  Format: "module.path:func_name".
+    # The function receives the full item dict (already a torch tensor batch over
+    # the chunk window) and must return a (mutated or new) item dict.  Useful
+    # e.g. to re-anchor a chunk of pelvis-nav actions onto the first frame's anchor.
+    item_transform_path: str | None = None
 
 
 @dataclass
