@@ -184,6 +184,12 @@ def make_policy(
         # Make a fresh policy.
         policy = policy_cls(**kwargs)
 
+    # For pi0, optionally re-init the Gemma action expert from scratch after
+    # loading the pretrained checkpoint.
+    if cfg.type == "pi0" and getattr(cfg, "expert_from_scratch", False):
+        print("Re-initializing pi0 Gemma action expert from scratch")
+        policy.model.paligemma_with_expert.reinit_gemma_expert()
+
     policy.to(cfg.device)
     assert isinstance(policy, nn.Module)
 

@@ -207,9 +207,12 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
             if cfg.log_freq > 0 and step % cfg.log_freq == 0:
                 logging.info(train_tracker)
                 if wandb_logger:
-                    wandb_log_dict = train_tracker.to_dict()
-                    wandb_log_dict.update(sanitize_for_wandb(output_dict))
-                    wandb_logger.log_dict(wandb_log_dict, step)
+                    try:
+                        wandb_log_dict = train_tracker.to_dict()
+                        wandb_log_dict.update(sanitize_for_wandb(output_dict))
+                        wandb_logger.log_dict(wandb_log_dict, step)
+                    except Exception as e:
+                        logging.warning(f"wandb/swanlab logging failed: {e}")
                 train_tracker.reset_averages()
 
             if cfg.save_checkpoint and (step % cfg.save_freq == 0 or step == cfg.steps):
@@ -225,7 +228,10 @@ def train(rank: int, world_size: int, cfg: TrainPipelineConfig):
 
                 logging.info(f"[Eval] Step {step}: val_loss = {eval_info['val_loss']:.4f}")
                 if wandb_logger:
-                    wandb_logger.log_dict(eval_info, step, mode="eval")
+                    try:
+                        wandb_logger.log_dict(eval_info, step, mode="eval")
+                    except Exception as e:
+                        logging.warning(f"wandb/swanlab eval logging failed: {e}")
 
     if rank == 0 and eval_env:
         eval_env.close()

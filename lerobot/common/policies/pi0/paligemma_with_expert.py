@@ -184,6 +184,26 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         self.to_bfloat16_like_physical_intelligence()
         self.set_requires_grad()
 
+    def reinit_gemma_expert(self):
+        """Re-initialize the Gemma action expert from a freshly constructed model.
+
+        Preserves dtype (bfloat16 for the transformer layers) and the
+        ``embed_tokens = None`` modification done in ``__init__``.
+        """
+        fresh_expert = GemmaForCausalLM(config=self.config.gemma_expert_config)
+        fresh_expert.model.embed_tokens = None
+        self.gemma_expert = fresh_expert
+        # Re-apply bfloat16 cast to the expert layers (matches __init__ behavior).
+        for name, param in self.gemma_expert.named_parameters():
+            if "model.layers" in name:
+                param.data = param.data.to(dtype=torch.bfloat16)
+        # Move to the same device as the rest of the model.
+        try:
+            device = next(self.paligemma.parameters()).device
+            self.gemma_expert.to(device)
+        except StopIteration:
+            pass
+
     def set_requires_grad(self):
         if self.config.freeze_vision_encoder:
             self.paligemma.vision_tower.eval()
@@ -239,6 +259,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         use_cache: Optional[bool] = None,
         fill_kv_cache: Optional[bool] = None,
     ):
+        self._fill_kv_cache = fill_kv_cache
         lm = self.paligemma.language_model \
             if not hasattr(self.paligemma.language_model, "model") \
             else self.paligemma.language_model.model
@@ -415,6 +436,20 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         masked_att_weights = torch.where(attention_mask[:, None, :, :], att_weights, big_neg)
 
         probs = nn.functional.softmax(masked_att_weights, dim=-1)
+        
+        if getattr(self, '_save_attn', False) and not getattr(self, '_fill_kv_cache', False):
+            p = probs.detach().cpu()
+            if not hasattr(self, '_attn_probs_sum') or self._attn_probs_sum is None:
+                self._attn_probs_sum = p.clone()
+                self._attn_weight_sum = 1.0
+                self._attn_layer_idx = 1
+            else:
+                self._attn_layer_idx += 1
+                w = float(self._attn_layer_idx)  # 线性递增权重，后层更大
+                self._attn_probs_sum += p * w
+                self._attn_weight_sum += w
+            self._attn_probs = self._attn_probs_sum / self._attn_weight_sum
+
         probs = probs.to(dtype=value_states.dtype)
 
         # probs: batch_size, num_key_value_head, num_att_head, sequence_length, sequence_length

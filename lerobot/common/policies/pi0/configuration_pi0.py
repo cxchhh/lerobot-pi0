@@ -30,7 +30,7 @@ class PI0Config(PreTrainedConfig):
     chunk_size: int = 50
     n_action_steps: int = 50
     n_obs_states: int = 1
-    n_plan_steps: int = 0
+    n_plan_steps: int = 1
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -76,6 +76,9 @@ class PI0Config(PreTrainedConfig):
     freeze_vision_encoder: bool = False
     train_expert_only: bool = False
     train_state_proj: bool = True
+    # If True, re-initialize the Gemma action expert weights from scratch after
+    # loading the pretrained checkpoint (PaliGemma backbone weights are kept).
+    expert_from_scratch: bool = False
 
     # Training presets
     optimizer_lr: float = 2.5e-5

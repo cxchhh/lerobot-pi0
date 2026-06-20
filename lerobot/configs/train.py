@@ -54,10 +54,13 @@ class TrainPipelineConfig(HubMixin):
     batch_size: int = 16
     steps: int = 800_00
     eval_freq: int = 1000
-    log_freq: int = 10
+    log_freq: int = 50
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 10_000
+    # For pi0: re-initialize the Gemma action expert from scratch after loading
+    # the pretrained checkpoint (PaliGemma backbone weights are kept).
+    expert_from_scratch: bool = False
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
@@ -117,6 +120,11 @@ class TrainPipelineConfig(HubMixin):
         elif self.use_policy_training_preset and not self.resume:
             self.optimizer = self.policy.get_optimizer_preset()
             self.scheduler = self.policy.get_scheduler_preset()
+
+        # Propagate top-level expert_from_scratch onto the policy config so that
+        # `make_policy` can act on it. Only meaningful for pi0.
+        if self.expert_from_scratch and hasattr(self.policy, "expert_from_scratch"):
+            self.policy.expert_from_scratch = True
 
     @classmethod
     def __get_path_fields__(cls) -> list[str]:
