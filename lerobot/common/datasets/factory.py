@@ -62,6 +62,11 @@ def resolve_delta_timestamps(
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
         if key == "observation.state" and hasattr(cfg, "state_delta_indices") and cfg.state_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.state_delta_indices]
+        # Chunk-aligned obs (e.g. observation.anchor_pose) must travel with the
+        # action chunk so item_transform hooks like reanchor_chunk_to_first_frame
+        # see (H, *) anchors per chunk rather than a single frame.
+        if key == "observation.anchor_pose" and cfg.action_delta_indices is not None:
+            delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
 
     if len(delta_timestamps) == 0:
         delta_timestamps = None
