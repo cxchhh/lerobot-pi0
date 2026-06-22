@@ -76,9 +76,6 @@ class PI0Config(PreTrainedConfig):
     freeze_vision_encoder: bool = False
     train_expert_only: bool = False
     train_state_proj: bool = True
-    # If True, re-initialize the Gemma action expert weights from scratch after
-    # loading the pretrained checkpoint (PaliGemma backbone weights are kept).
-    expert_from_scratch: bool = False
 
     # Training presets
     optimizer_lr: float = 2.5e-5

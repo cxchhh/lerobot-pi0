@@ -150,11 +150,6 @@ def main_wrapper(cfg: TrainPipelineConfig):
         cfg.policy.eval = True
         cfg.policy.load_path = cfg.policy.pretrained_path
 
-    # Inference path: never re-init the action expert, regardless of what the
-    # saved policy config says (that flag is training-only).
-    if hasattr(cfg.policy, "expert_from_scratch"):
-        cfg.policy.expert_from_scratch = False
-
     network: PreTrainedPolicy = make_policy(
         cfg=cfg.policy,
         ds_meta=ds_meta
