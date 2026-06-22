@@ -162,13 +162,15 @@ def main_wrapper(cfg: TrainPipelineConfig):
     network.eval()
 
     
-    policy = ServerPolicy(model=network, device=cfg.policy.device, save_attn=True)
+    save_attn = os.environ.get("SAVE_ATTN", "0") == "1"
+    policy = ServerPolicy(model=network, device=cfg.policy.device, save_attn=save_attn)
     policy_server = WebsocketPolicyServer(policy=policy, host=HOST, port=PORT)
     print(f"Starting server on {HOST}:{PORT}")
     try:
         policy_server.serve_forever()
     finally:
-        cv2.destroyAllWindows()
+        if save_attn:
+            cv2.destroyAllWindows()
     
 
 if __name__ == '__main__':
