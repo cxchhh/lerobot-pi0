@@ -1,3 +1,17 @@
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from dataclasses import dataclass, field
 
 from lerobot.common.optim.optimizers import AdamWConfig
@@ -12,8 +26,11 @@ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 @dataclass
 class HVLAConfig(PreTrainedConfig):
     # Input / output structure.
-    n_obs_steps: int = 1 # k-frame observation
-    n_action_steps: int = 20
+    n_obs_steps: int = 1
+    chunk_size: int = 50
+    n_action_steps: int = 50
+    n_obs_states: int = 1
+    n_plan_steps: int = 1
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -22,98 +39,21 @@ class HVLAConfig(PreTrainedConfig):
             "ACTION": NormalizationMode.MEAN_STD,
         }
     )
-    features : dict[str, PolicyFeature] = field(default_factory=lambda:{
-        "observation.state": {
-            "dtype": "float32",
-            "shape": [65]
-        },
-        "observation.images.head": {
-            "dtype": "video",
-            "shape": [
-                3,
-                224,
-                400
-            ],
-            "names": [
-                "channels",
-                "height",
-                "width"
-            ],
-            "info": {
-                "video.height": 224,
-                "video.width": 400,
-                "video.codec": "av1",
-                "video.pix_fmt": "yuv420p",
-                "video.is_depth_map": False,
-                "video.fps": 50,
-                "video.channels": 3,
-                "has_audio": False
-            }
-        },
-        "observation.images.right_wrist": {
-            "dtype": "video",
-            "shape": [
-                3,
-                224,
-                224
-            ],
-            "names": [
-                "channels",
-                "height",
-                "width"
-            ],
-            "info": {
-                "video.height": 224,
-                "video.width": 224,
-                "video.codec": "av1",
-                "video.pix_fmt": "yuv420p",
-                "video.is_depth_map": False,
-                "video.fps": 50,
-                "video.channels": 3,
-                "has_audio": False
-            }
-        },
-        "action": {
-            "dtype": "float32",
-            "shape": [
-                37
-            ],
-        },
-        "timestamp": {
-            "dtype": "float32",
-            "shape": [
-                1
-            ],
-        },
-        "frame_index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        },
-        "episode_index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        },
-        "index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        },
-        "task_index": {
-            "dtype": "int64",
-            "shape": [
-                1
-            ],
-        }
-    })
 
     # Shorter state and action vectors will be padded
-    max_state_dim: int = 65
-    max_action_dim: int = 40
+    max_state_dim: int = 35
+    max_action_dim: int = 32
+
+    # BFM latent action: when True, the action is a chunk of BFM latents on
+    # the RMS=1 hypersphere (256-d per step). Setting this flag:
+    #   * overrides max_action_dim → bfm_latent_dim (256)
+    #   * routes ACTION through IDENTITY normalization (dataset-stats normalize
+    #     would destroy the unit-RMS structure)
+    #   * makes sample_actions L2-renormalize its output to the unit-RMS sphere
+    # The dataset side is responsible for putting BFM latents into batch[ACTION];
+    # encoding/anchor handling is done out-of-band (e.g. in locomanip deploy).
+    bfm_latent_action: bool = False
+    bfm_latent_dim: int = 256
 
     # Image preprocessing
     resize_imgs_with_padding: tuple[int, int] = (224, 224)
@@ -122,54 +62,34 @@ class HVLAConfig(PreTrainedConfig):
     # left and right wrist cameras in addition to the top camera.
     empty_cameras: int = 0
 
-    # # Attention utils
-    # use_cache: bool = True
-    # attention_implementation: str = "eager"  # or fa2, flex
-    eval: bool = False
+    # Converts the joint and gripper values from the standard Aloha space to
+    # the space used by the pi internal runtime which was used to train the base model.
+    adapt_to_pi_aloha: bool = False
 
-    # ===== VLM config =====
-    vlm_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
-    rewrite_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
-    freeze_backbone: bool = False
-    freeze_vision: bool = True
+    # Converts joint dimensions to deltas with respect to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+    use_delta_joint_actions_aloha: bool = False
 
-    # =====  VLM query config  =====
-    latent_dim: int = 256
-    query_layers: int = 6
-    query_num_heads: int = 4
-    query_ff_dim_multiplier: int = 4
-    query_dropout_rate: float = 0.1
+    # Tokenizer
+    tokenizer_max_length: int = 48
 
-    # ===== History Transformer config =====
-    max_seq_len: int = 32
-    embed_dim: int = 384
-    num_layers: int = 6
-    num_heads: int = 6
-    ff_dim_multiplier: int = 4
-    dropout_rate: float = 0.1
-    command_dim: int = 4
+    # Projector
+    proj_width: int = 1024
 
-    # ===== Flow-Matching config =====
-    t_embed_dim: int = 128
-    flow_hidden_dim: int = 384
-    flow_num_layers: int = 3
-    cond_feat_dim: int = 256
-    sample_steps: int = 16
-    path: str = "rectified"
+    # Decoding
+    num_steps: int = 10
 
-    obs_dim: int = 65 # 29 + 29 + 4 + 3
-    act_dim: int = 37 # 29 + 1
+    # Attention utils
+    use_cache: bool = True
+    attention_implementation: str = "eager"  # or fa2, flex
 
-    # ===== Training Hyperparameters =====
-    total_timesteps: int = 50_000
-    log_interval: int = 200
-    reset_ratio: float = 1e-3
-    termination_threshold: float = 0.5
-    bf16: bool = True
-    load_path: str = ""
+    # Finetuning settings
+    freeze_vision_encoder: bool = False
+    train_expert_only: bool = False
+    train_state_proj: bool = True
 
     # Training presets
-    optimizer_lr: float = 1e-4
+    optimizer_lr: float = 2.5e-5
     optimizer_betas: tuple[float, float] = (0.9, 0.95)
     optimizer_eps: float = 1e-8
     optimizer_weight_decay: float = 1e-10
@@ -178,38 +98,49 @@ class HVLAConfig(PreTrainedConfig):
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
-
     # TODO: Add EMA
 
     def __post_init__(self):
         super().__post_init__()
 
+        # When BFM latent action is on, force the action dim + bypass dataset
+        # normalization (latents from the encoder are already unit-RMS).
+        if self.bfm_latent_action:
+            self.max_action_dim = self.bfm_latent_dim
+            self.normalization_mapping = {
+                **self.normalization_mapping,
+                "ACTION": NormalizationMode.IDENTITY,
+            }
+
         # TODO(Steven): Validate device and amp? in all policy configs?
         """Input validation (not exhaustive)."""
-        # if self.n_action_steps > self.chunk_size:
-        #     raise ValueError(
-        #         f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
-        #         f"{self.n_action_steps} for `n_action_steps` and {self.chunk_size} for `chunk_size`."
-        #     )
-        # if self.n_obs_steps != 1:
-        #     raise ValueError(
-        #         f"Multiple observation steps not handled yet. Got `nobs_steps={self.n_obs_steps}`"
-        #     )
-        self.pretrained_path = None
+        if self.n_action_steps > self.chunk_size:
+            raise ValueError(
+                f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
+                f"{self.n_action_steps} for `n_action_steps` and {self.chunk_size} for `chunk_size`."
+            )
+        if self.n_obs_steps != 1:
+            raise ValueError(
+                f"Multiple observation steps not handled yet. Got `nobs_steps={self.n_obs_steps}`"
+            )
+
+        if self.use_delta_joint_actions_aloha:
+            raise NotImplementedError(
+                "`use_delta_joint_actions_aloha` is used by pi0 for aloha real models. It is not ported yet in LeRobot."
+            )
 
     def validate_features(self) -> None:
         # TODO: implement value error
         # if not self.image_features and not self.env_state_feature:
         #     raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
-        # for i in range(self.empty_cameras):
-        #     key = f"observation.images.empty_camera_{i}"
-        #     empty_camera = PolicyFeature(
-        #         type=FeatureType.VISUAL,
-        #         shape=(3, 480, 640),
-        #     )
-        #     self.input_features[key] = empty_camera
-        pass
+        for i in range(self.empty_cameras):
+            key = f"observation.images.empty_camera_{i}"
+            empty_camera = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(3, 480, 640),
+            )
+            self.input_features[key] = empty_camera
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(
@@ -233,7 +164,9 @@ class HVLAConfig(PreTrainedConfig):
 
     @property
     def action_delta_indices(self) -> list:
-        return list(range(self.n_action_steps*2)) # g.t. action for each parallel frame
+        if self.n_plan_steps > 0:
+            return list(range(0, self.chunk_size * self.n_plan_steps, self.n_plan_steps))
+        return list(range(self.chunk_size))
 
     @property
     def reward_delta_indices(self) -> None:
@@ -241,4 +174,4 @@ class HVLAConfig(PreTrainedConfig):
 
     @property
     def state_delta_indices(self) -> list:
-        return list(range(self.n_action_steps))
+        return list(range(-(self.n_obs_states-1)*self.n_plan_steps, 1, self.n_plan_steps))

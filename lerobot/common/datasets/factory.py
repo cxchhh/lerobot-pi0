@@ -64,9 +64,22 @@ def resolve_delta_timestamps(
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.state_delta_indices]
         # Chunk-aligned obs (e.g. observation.anchor_pose) must travel with the
         # action chunk so item_transform hooks like reanchor_chunk_to_first_frame
-        # see (H, *) anchors per chunk rather than a single frame.
-        if key == "observation.anchor_pose" and cfg.action_delta_indices is not None:
-            delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
+        # see (H, *) anchors per chunk rather than a single frame.  When the
+        # policy ALSO defines state_delta_indices (history stacking), include
+        # those offsets too so item_transform can reproject history state to
+        # the current pelvis-nav.  Sorted unique union, so layout is:
+        #   anchor[0..N_state-1]                   -> state history anchors
+        #   anchor[N_state-1..N_state-1+H_action]  -> action chunk anchors
+        # (the offset-0 entry is shared between the two slices.)
+        if key == "observation.anchor_pose":
+            offsets: list = []
+            if cfg.action_delta_indices is not None:
+                offsets.extend(cfg.action_delta_indices)
+            if hasattr(cfg, "state_delta_indices") and cfg.state_delta_indices is not None:
+                offsets.extend(cfg.state_delta_indices)
+            if offsets:
+                offsets = sorted(set(offsets))
+                delta_timestamps[key] = [i / ds_meta.fps for i in offsets]
 
     if len(delta_timestamps) == 0:
         delta_timestamps = None

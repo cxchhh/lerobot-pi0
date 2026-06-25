@@ -54,12 +54,12 @@ import orbax.checkpoint as ocp
 import torch
 from jax.sharding import SingleDeviceSharding
 
-from lerobot.common.policies.pi0_multi.configuration_pi0_multi import PI0MultiConfig
+from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.common.policies.pi0.conversion_scripts.conversion_utils import (
     get_gemma_config,
     get_paligemma_config,
 )
-from lerobot.common.policies.pi0_multi.modeling_pi0_multi import PI0MultiPolicy
+from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
 
 PRECISIONS = {"bfloat16": torch.bfloat16, "float32": torch.float32, "float16": torch.float16}
 
@@ -356,18 +356,18 @@ def convert_pi0_checkpoint(checkpoint_dir: str, precision: str, tokenizer_id: st
     # Instantiate model from configs
 
     if "pi0_aloha_sim" in checkpoint_dir:
-        pi0_config = PI0MultiConfig(
+        pi0_config = PI0Config(
             empty_cameras=2,
             adapt_to_pi_aloha=True,
             use_delta_joint_actions_aloha=False,
         )
     elif "pi0_aloha_towel" in checkpoint_dir:
-        pi0_config = PI0MultiConfig(
+        pi0_config = PI0Config(
             adapt_to_pi_aloha=True,
             use_delta_joint_actions_aloha=True,
         )
     elif "pi0_base" in checkpoint_dir:
-        pi0_config = PI0MultiConfig(
+        pi0_config = PI0Config(
             empty_cameras=0,
             adapt_to_pi_aloha=False,
             use_delta_joint_actions_aloha=False,
@@ -376,7 +376,7 @@ def convert_pi0_checkpoint(checkpoint_dir: str, precision: str, tokenizer_id: st
         raise ValueError()
 
     # gemma_config=gemma_config, paligemma_config=paligemma_config)
-    pi0_model = PI0MultiPolicy(pi0_config)
+    pi0_model = PI0Policy(pi0_config)
 
     paligemma_params = update_keys_with_prefix(paligemma_params, "model.paligemma_with_expert.")
     gemma_params = update_keys_with_prefix(gemma_params, "model.paligemma_with_expert.")
