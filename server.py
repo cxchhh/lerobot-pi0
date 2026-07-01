@@ -1,4 +1,5 @@
 from typing import Dict
+import sys
 import einops
 from termcolor import colored
 import torch
@@ -24,6 +25,38 @@ from lerobot.configs.train import TrainPipelineConfig
 
 HOST = "0.0.0.0"
 PORT = "8002"
+
+
+def _pop_bool(argv: list, name: str) -> bool:
+    if name in argv:
+        argv.remove(name)
+        return True
+    return False
+
+
+def _pop_kv(argv: list, name: str, default=None):
+    """Remove `--name value` or `--name=value` from argv, return the value.
+    Leaves argv untouched (returning default) if the flag isn't present.
+    Needed because ``parser.wrap()`` (draccus-backed) would reject unknown args.
+    """
+    for i, arg in enumerate(argv):
+        if arg == name:
+            argv.pop(i)
+            if i < len(argv):
+                return argv.pop(i)
+            return ""
+        if arg.startswith(name + "="):
+            argv.pop(i)
+            return arg[len(name) + 1:]
+    return default
+
+
+# --- TRT CLI flags (pre-parsed before draccus so it doesn't choke on them) ---
+_TRT_ENABLED = _pop_bool(sys.argv, "--trt")
+_TRT_PRECISION = _pop_kv(sys.argv, "--trt-precision", "bf16")
+_TRT_RTC_MODE = _pop_kv(sys.argv, "--trt-rtc-mode", "torch")
+_TRT_CACHE_DIR = _pop_kv(sys.argv, "--trt-cache-dir", None)
+_TRT_DEBUG = _pop_bool(sys.argv, "--trt-debug")
 
 def process_img(img):
     img = torch.from_numpy(img)
@@ -169,7 +202,28 @@ def main_wrapper(cfg: TrainPipelineConfig):
     )
     network.eval()
 
-    
+    # --- Optional TensorRT backend (--trt) ---
+    if _TRT_ENABLED:
+        from lerobot.common.policies.pi0.trt_infer import PI0TRTBackend
+        ckpt_dir = Path(_TRT_CACHE_DIR) if _TRT_CACHE_DIR else Path(
+            cfg.policy.pretrained_path or cfg.policy.path
+        )
+        logging.info(colored(
+            f"[trt] enabling TRT backend: precision={_TRT_PRECISION} "
+            f"rtc_mode={_TRT_RTC_MODE} debug={_TRT_DEBUG} cache={ckpt_dir}",
+            "cyan", attrs=["bold"],
+        ))
+        backend = PI0TRTBackend(
+            torch_policy=network,
+            ckpt_dir=ckpt_dir,
+            precision=_TRT_PRECISION,
+            rtc_mode=_TRT_RTC_MODE,
+            debug=_TRT_DEBUG,
+        )
+        network.model.trt_backend = backend
+        network.model.trt_rtc_mode = _TRT_RTC_MODE
+        logging.info(colored("[trt] backend attached; base and RTC-if-supported paths go through TRT.", "green"))
+
     save_attn = os.environ.get("SAVE_ATTN", "0") == "1"
     policy = ServerPolicy(model=network, device=cfg.policy.device, save_attn=save_attn)
     policy_server = WebsocketPolicyServer(policy=policy, host=HOST, port=PORT)

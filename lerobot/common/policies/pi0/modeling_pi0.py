@@ -423,17 +423,29 @@ class PI0Policy(PreTrainedPolicy):
         losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
         loss_dict["losses_after_forward"] = losses.clone()
 
+        # Suffix mask (1 = suffix / trained; 0 = training-time RTC prefix).
+        # Losses are already zeroed on prefix by model.forward; here we
+        # also EXCLUDE prefix positions from the mean-loss denominator so
+        # the effective per-position gradient is invariant to sampled d.
+        suffix_mask = self.model.last_suffix_mask                       # (B, T, 1) or None
+        if suffix_mask is None:
+            suffix_mask = torch.ones_like(losses[..., :1])
+
         if actions_is_pad is not None:
             in_episode_bound = ~actions_is_pad
             losses = losses * in_episode_bound.unsqueeze(-1)
             loss_dict["losses_after_in_ep_bound"] = losses.clone()
+            valid_mask = suffix_mask.squeeze(-1) * in_episode_bound.float()
+        else:
+            valid_mask = suffix_mask.squeeze(-1)
 
         # Remove padding
         losses = losses[:, :, : self.config.action_feature.shape[0]]
         loss_dict["losses_after_rm_padding"] = losses.clone()
 
-        # For backward pass
-        den = (~actions_is_pad).sum().clamp_min(1) * losses.shape[-1]
+        # For backward pass: denominator counts only non-pad suffix
+        # positions × action_dim (excludes RTC prefix positions).
+        den = valid_mask.sum().clamp_min(1) * losses.shape[-1]
         loss = losses.sum() / den
         # For logging
         loss_dict["l2_loss"] = loss.item()
@@ -571,6 +583,9 @@ class PI0FlowMatching(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        # Latest training-time RTC suffix mask (populated by forward).
+        # Read by the outer policy forward to normalize the loss.
+        self.last_suffix_mask: Optional[Tensor] = None
 
         paligemma_with_export_config = PaliGemmaWithExpertConfig(
             freeze_vision_encoder=self.config.freeze_vision_encoder,
@@ -588,6 +603,20 @@ class PI0FlowMatching(nn.Module):
         self.action_time_mlp_out = nn.Linear(self.config.proj_width, self.config.proj_width)
 
         self.set_requires_grad()
+
+        # Optional TensorRT backend. Attached by server.py when --trt is set.
+        # When present, sample_actions delegates VLM prefill + each diffusion
+        # step to trt_backend. Outer x_t += dt * v_t loop stays in Python.
+        # See lerobot.common.policies.pi0.trt_infer.PI0TRTBackend.
+        self.trt_backend = None
+        self.trt_rtc_mode = "torch"  # "torch" | "split" | "tensorrt-only"
+        # When True, only VLM prefill uses TRT; diffusion stays in torch. Useful
+        # for isolating vlm speedup vs full-stack TRT.
+        self.trt_vlm_only = False
+        # When True, VLM stays in torch (no precision loss on KV cache) and only
+        # diffusion runs on TRT. Best precision/speed tradeoff — vlm is <5ms
+        # anyway, diffusion is the real cost.
+        self.trt_diffusion_only = False
 
     def set_requires_grad(self):
         for params in self.state_proj.parameters():
@@ -729,8 +758,18 @@ class PI0FlowMatching(nn.Module):
 
         B, T, D = actions.shape
         time_expanded = time[:, None, None].expand(-1, T, 1)
-        # time_prefix_mask = self.random_prefix_mask(time_expanded)  # (B, T, 1)
-        time_prefix_mask = torch.ones_like(time_expanded)
+        # Training-time RTC (arXiv:2512.05964): mask[t]=0 marks a prefix
+        # position -> x_t there is the clean action, u_t=0 (no loss),
+        # time_embed=0.  Teaches the model to condition on already-
+        # committed actions with no inference-time inpainting overhead.
+        if getattr(self.config, "train_time_rtc", False):
+            time_prefix_mask = self.random_prefix_mask(time_expanded)
+        else:
+            time_prefix_mask = torch.ones_like(time_expanded)
+        # Expose for the outer policy.forward to exclude prefix positions
+        # from the mean-loss denominator (kept as attribute to avoid
+        # changing this forward's return signature).
+        self.last_suffix_mask = time_prefix_mask.detach()
         time_masked = time_expanded * time_prefix_mask  # (B, T, 1)
         x_t = time_masked * noise + (1.0 - time_masked) * actions  # (B, T, D)
         u_t = (noise - actions) * time_prefix_mask  # (B, T, D)
@@ -759,29 +798,39 @@ class PI0FlowMatching(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
 
-        assert all(time_prefix_mask.view(-1)) > 0.5 # no mask actually
         losses = F.mse_loss(u_t, v_t, reduction="none")
+        # Zero out the loss on prefix positions (training-time RTC).
         losses = losses * time_prefix_mask
         return losses
     
-    def random_prefix_mask(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x: Tensor of shape (B, T, D)
-        return:
-            mask: (B, T, 1), 1 = suffix (to train), 0 = prefix (condition only)
-        """
-        B, T, D = x.shape
-        device = x.device
+    def random_prefix_mask(self, x: torch.Tensor) -> torch.Tensor:
+        """Training-time RTC prefix sampler (arXiv:2512.05964 §3).
 
+        Sample d ~ U(0, floor(T * max_prefix_frac) + 1) per batch
+        element.  Positions [0, d) are the prefix (mask=0, treated as
+        already-committed clean actions); [d, T) is the suffix (mask=1,
+        trained under flow matching).  d=0 recovers the original no-
+        prefix training objective, so this is a strict generalization.
+
+        The paper's constraint d <= H - s (where s = stride between
+        sparse frames) corresponds to max_prefix_frac up to
+        (H - s) / H = 1 - s/H.  For pi0 H = chunk_size, s = 1 sparse
+        step so the bound is nearly 1.0; we default to 0.5 for a
+        conservative training distribution.
+        """
+        B, T, _ = x.shape
+        device = x.device
+        max_frac = float(getattr(self.config, "train_time_rtc_max_prefix_frac", 0.5))
+        max_prefix = max(0, min(T - 1, int(T * max_frac)))
         prefix_lens = torch.randint(
             low=0,
-            high=T // 2 + 1,
+            high=max_prefix + 1,
             size=(B,),
             device=device,
         )
-        t_idx = torch.arange(T, device=device)[None, :]   # (1, T)
+        t_idx = torch.arange(T, device=device)[None, :]        # (1, T)
         mask_suffix = (t_idx >= prefix_lens[:, None]).float()  # (B, T)
-        return mask_suffix.unsqueeze(-1)  # (B, T, 1)
+        return mask_suffix.unsqueeze(-1)                       # (B, T, 1)
 
     def sample_actions(
         self,
@@ -816,21 +865,41 @@ class PI0FlowMatching(nn.Module):
                 prefix_len = action_prefix.shape[1]
                 noise[:, :prefix_len] = action_prefix
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks
-        )
-        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        # If a TRT backend is attached, delegate prefill to it (unless we're
+        # explicitly in diffusion-only TRT mode where we want the exact torch
+        # KV values to feed the TRT diffusion engine). The past_key_values
+        # returned in the backend path is a stacked tensor (num_layers, 2, B,
+        # prefix_len, kv_heads, head_dim); `_denoise_step_base` sends it
+        # straight through to TRT, `_denoise_step_rtc` unpacks it back to a
+        # dict for torch autograd.
+        if self.trt_backend is not None and not self.trt_diffusion_only:
+            past_key_values, prefix_pad_masks = self.trt_backend.vlm_prefill(
+                images, img_masks, lang_tokens, lang_masks
+            )
+        else:
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                images, img_masks, lang_tokens, lang_masks
+            )
+            prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+            prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
-        # OpenPI: prefix KV cache（与 denoise 中 [None, suffix] 配套）
-        _, past_key_values = self.paligemma_with_expert.forward(
-            attention_mask=prefix_att_2d_masks,
-            position_ids=prefix_position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs, None],
-            use_cache=self.config.use_cache,
-            fill_kv_cache=True,
-        )
+            # OpenPI: prefix KV cache（与 denoise 中 [None, suffix] 配套）
+            _, past_key_values = self.paligemma_with_expert.forward(
+                attention_mask=prefix_att_2d_masks,
+                position_ids=prefix_position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, None],
+                use_cache=self.config.use_cache,
+                fill_kv_cache=True,
+            )
+            if self.trt_backend is not None and self.trt_diffusion_only:
+                # Stack torch KV dict → tensor so downstream _denoise_step_base
+                # can hand it to the TRT diffusion engine.
+                num_layers = self.paligemma_with_expert.paligemma.config.text_config.num_hidden_layers
+                past_key_values = torch.stack([
+                    torch.stack([past_key_values[i]["key_states"], past_key_values[i]["value_states"]], dim=0)
+                    for i in range(num_layers)
+                ], dim=0)
 
         dt = -1.0 / self.config.num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
@@ -896,6 +965,14 @@ class PI0FlowMatching(nn.Module):
         timestep,
     ) -> Tensor:
         """标准推理一步（无 RTC），与 OpenPI suffix + KV cache 一致。"""
+        if self.trt_backend is not None and not self.trt_vlm_only:
+            # past_key_values here is the stacked tensor produced by the TRT
+            # prefill engine. Forward it straight through.
+            return self.trt_backend.diffusion_step(state, prefix_pad_masks, past_key_values, x_t, timestep)
+        if self.trt_backend is not None and self.trt_vlm_only:
+            # VLM-only mode: unpack stacked KV back to dict for torch expert
+            past_key_values = self._unstack_kv(past_key_values)
+
         suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(state, x_t, timestep)
 
         suffix_len = suffix_pad_masks.shape[1]
@@ -923,6 +1000,67 @@ class PI0FlowMatching(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
 
+    def _unstack_kv(self, past_kv_stack: Tensor) -> dict:
+        """Convert stacked (L,2,B,T,KV,D) tensor produced by TRT prefill back to
+        the dict layout the torch expert forward expects."""
+        num_layers = self.paligemma_with_expert.paligemma.config.text_config.num_hidden_layers
+        return {
+            i: {
+                "key_states": past_kv_stack[i, 0].contiguous(),
+                "value_states": past_kv_stack[i, 1].contiguous(),
+            }
+            for i in range(num_layers)
+        }
+
+    def _rtc_step_via_trt(
+        self,
+        state,
+        prefix_pad_masks,
+        past_kv_stack,
+        x_t,
+        timestep,
+        action_prefix,
+        rtc_inference_delay: int,
+        rtc_prefix_attention_horizon: Optional[int],
+        rtc_max_guidance_weight: float,
+    ) -> Tensor:
+        """RTC path with both fwd and bwd running on TRT (F3).
+
+        Two engine calls per denoise step:
+          1. `diffusion_step` → v_model (no autograd)
+          2. `diffusion_step_and_vjp` → grad_v @ error (fwd re-run internally)
+
+        Assembles pinv_correction analytically:
+        ``∂x_hat/∂x = I + (1-t) * ∂v/∂x``  →  ``pinv = error + (1-t)*grad_v_err``.
+        """
+        chunk_size = self.config.n_action_steps
+        plen = action_prefix.shape[1]
+
+        v_model = self.trt_backend.diffusion_step(state, prefix_pad_masks, past_kv_stack, x_t, timestep)
+
+        end = rtc_prefix_attention_horizon if rtc_prefix_attention_horizon is not None else chunk_size
+        w = get_prefix_weights(
+            rtc_inference_delay, end, chunk_size, "exp", device=x_t.device, dtype=torch.float32
+        )
+        weights = w[None, :, None].expand_as(x_t)
+        t_b = timestep[..., None]
+        x_hat = x_t + v_model * (1 - t_b)
+        error = torch.zeros_like(x_t)
+        error[:, :plen] = (action_prefix[:, :plen] - x_hat[:, :plen]) * weights[:, :plen]
+
+        _, grad_v_error = self.trt_backend.diffusion_step_and_vjp(
+            state, prefix_pad_masks, past_kv_stack, x_t, timestep, error
+        )
+        pinv_correction = error + (1 - t_b) * grad_v_error
+
+        inv_r2 = (t_b ** 2 + (1 - t_b) ** 2) / ((1 - t_b) ** 2 + 1e-6)
+        c = torch.nan_to_num((1 - t_b) / t_b, posinf=rtc_max_guidance_weight)
+        gw = torch.minimum(
+            c * inv_r2,
+            torch.tensor(rtc_max_guidance_weight, device=x_t.device, dtype=c.dtype),
+        )
+        return v_model + gw * pinv_correction
+
     def _denoise_step_rtc(
         self,
         state,
@@ -936,6 +1074,25 @@ class PI0FlowMatching(nn.Module):
         rtc_max_guidance_weight: float,
     ) -> Tensor:
         """RTC：对 ``∂(x_t + v(1-t))/∂x_t`` 做 VJP，把预测速度拉向已执行 prefix（仅推理、有 prefix 时）。"""
+        # TRT F3 path — try bwd engine first if configured.
+        if self.trt_backend is not None and self.trt_rtc_mode in ("split", "tensorrt-only"):
+            try:
+                from lerobot.common.policies.pi0.trt_infer import NotSupportedError
+                return self._rtc_step_via_trt(
+                    state, prefix_pad_masks, past_key_values, x_t, timestep, action_prefix,
+                    rtc_inference_delay, rtc_prefix_attention_horizon, rtc_max_guidance_weight,
+                )
+            except NotSupportedError:
+                if self.trt_rtc_mode == "tensorrt-only":
+                    raise
+                # else fall through to PyTorch autograd path
+
+        # Torch path (either no backend, rtc_mode=torch, or F3 fallback).
+        if self.trt_backend is not None:
+            # past_key_values here is the stacked TRT prefill output; torch
+            # expert forward wants a dict.
+            past_key_values = self._unstack_kv(past_key_values)
+
         chunk_size = self.config.n_action_steps
         plen = action_prefix.shape[1]
 

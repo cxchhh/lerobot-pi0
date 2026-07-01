@@ -68,6 +68,17 @@ class PI0Config(PreTrainedConfig):
     # Decoding
     num_steps: int = 10
 
+    # Training-time RTC (arXiv:2512.05964).  Sample a prefix length per
+    # batch element; those positions are fed clean (no noise, no loss)
+    # so the model learns to condition on already-committed actions.
+    # At inference, set x_t[:d] = action_prefix and time[:d] = 0 — no
+    # ΠGDM inpainting overhead.
+    train_time_rtc: bool = True
+    train_time_rtc_max_prefix_frac: float = 0.5
+    """Upper bound on prefix length as a fraction of chunk (paper's
+    d <= H - s constraint; 0.5 means d ∈ [0, chunk_size//2]).  Raise
+    toward 1.0 if you expect large real-world inference delays."""
+
     # Attention utils
     use_cache: bool = True
     attention_implementation: str = "eager"  # or fa2, flex
