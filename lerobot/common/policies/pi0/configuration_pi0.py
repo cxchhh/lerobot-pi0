@@ -73,7 +73,7 @@ class PI0Config(PreTrainedConfig):
     # so the model learns to condition on already-committed actions.
     # At inference, set x_t[:d] = action_prefix and time[:d] = 0 — no
     # ΠGDM inpainting overhead.
-    train_time_rtc: bool = True
+    train_time_rtc: bool = False
     train_time_rtc_max_prefix_frac: float = 0.5
     """Upper bound on prefix length as a fraction of chunk (paper's
     d <= H - s constraint; 0.5 means d ∈ [0, chunk_size//2]).  Raise
