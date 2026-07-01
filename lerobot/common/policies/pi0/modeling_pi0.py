@@ -354,23 +354,43 @@ class PI0Policy(PreTrainedPolicy):
             delay = batch["delay"].reshape(-1)[0].item()
         else:
             delay = 0
+        # RTC tunables (forwarded from client obs_dict; see play_vla_infer
+        # CLI flags --rtc-prefix-attention-horizon / --rtc-max-guidance-weight).
+        # `attn_horizon=None` -> defaults to chunk_size in sample_actions
+        # (= soft guidance weight decays all the way across the chunk).
+        # Setting it to prefix_len gives a sharp 0 boundary at prefix end.
+        attn_horizon = None
+        if "rtc_prefix_attention_horizon" in batch.keys():
+            attn_horizon = int(batch["rtc_prefix_attention_horizon"].reshape(-1)[0].item())
+        max_w = 1.0
+        if "rtc_max_guidance_weight" in batch.keys():
+            max_w = float(batch["rtc_max_guidance_weight"].reshape(-1)[0].item())
         if "action_prefix" in batch.keys():
+            # Stage 1: copy raw client action_prefix into batch[ACTION]
+            # so that normalize_targets can apply mean/std before we use it
+            # as the noise initializer.  Pi RTC requires action_prefix to be
+            # in the SAME (normalized) action space as the model's noise,
+            # otherwise the GDM injection is in the wrong scale -> huge
+            # gradient and the first `delay` frames slam to random values.
             batch[ACTION] = batch["action_prefix"]
         batch = self.normalize_inputs(batch)
-        
+        if "action_prefix" in batch.keys():
+            batch = self.normalize_targets(batch)
+            batch["action_prefix"] = batch[ACTION]
 
         images, img_masks = self.prepare_images(batch)
         state = self.prepare_state(batch)
         lang_tokens, lang_masks = self.prepare_language(batch)
         action_prefix = batch.get("action_prefix", None)
         if action_prefix is not None:
-            print(f"action_prefix: {action_prefix.shape}")
             action_prefix = self.prepare_action(batch)
         
 
         actions = self.model.sample_actions(
             images, img_masks, lang_tokens, lang_masks, state, noise=None, action_prefix=action_prefix,
-            rtc_inference_delay=delay
+            rtc_inference_delay=delay,
+            rtc_prefix_attention_horizon=attn_horizon,
+            rtc_max_guidance_weight=max_w,
         )
 
         # Unpad actions
@@ -956,7 +976,12 @@ class PI0FlowMatching(nn.Module):
             weights = w[None, :, None].expand_as(x_in)
 
             # ΠGDM：目标相对 **估计终态** Â¹ = x + v(1−τ)，不是相对 x（论文式 2–3；PI `pinv_corrected_velocity`）。
-            x_hat = x_in + v_model * (1 - timestep)
+            # `timestep` comes in as (B, T) for embed_suffix; broadcast with
+            # the (B, T, D) action tensors needs an explicit trailing 1 or
+            # PyTorch right-aligns it (B, T) -> (1, B, T), producing the
+            # dim 2: D vs T size mismatch we hit before this fix.
+            t_b = timestep[..., None]                                 # (B, T, 1)
+            x_hat = x_in + v_model * (1 - t_b)
             error = torch.zeros_like(x_in)
             error[:, :plen] = (action_prefix[:, :plen] - x_hat[:, :plen]) * weights[:, :plen]
 
@@ -969,8 +994,8 @@ class PI0FlowMatching(nn.Module):
                 only_inputs=True,
             )[0]
 
-            inv_r2 = (timestep**2 + (1 - timestep) ** 2) / ((1 - timestep) ** 2 + 1e-6)
-            c = torch.nan_to_num((1 - timestep) / timestep, posinf=rtc_max_guidance_weight)
+            inv_r2 = (t_b ** 2 + (1 - t_b) ** 2) / ((1 - t_b) ** 2 + 1e-6)
+            c = torch.nan_to_num((1 - t_b) / t_b, posinf=rtc_max_guidance_weight)
             gw = torch.minimum(
                 c * inv_r2,
                 torch.tensor(rtc_max_guidance_weight, device=x_in.device, dtype=c.dtype),

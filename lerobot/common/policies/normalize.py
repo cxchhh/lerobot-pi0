@@ -106,6 +106,18 @@ def create_stats_buffers(
     return stats_buffers
 
 
+# Lower bound applied to per-dim std in MEAN_STD normalization.  Narrow,
+# single-task datasets (e.g. walk-forward only) have many action dims with
+# std ~ 0 (constant grip, near-constant wrist rot6d cols).  The default
+# `std + 1e-8` epsilon is way too loose: a 1e-3 fluctuation on a std=0 dim
+# gets normalized to 1e5, so loss blows up to 200+ on step 0.  Clipping
+# std at 0.01 (= 1cm position / 0.01-rot6d-unit) keeps narrow dims from
+# dominating loss while still using mean-std for the well-conditioned dims.
+# This is applied at forward time on BOTH Normalize and Unnormalize so the
+# round-trip stays exact and saved checkpoints don't change.
+_STD_FLOOR = 0.01
+
+
 def _no_stats_error_str(name: str) -> str:
     return (
         f"`{name}` is infinity. You should either initialize with `stats` as an argument, or use a "
@@ -169,7 +181,8 @@ class Normalize(nn.Module):
                 std = buffer["std"]
                 assert not torch.isinf(mean).any(), _no_stats_error_str("mean")
                 assert not torch.isinf(std).any(), _no_stats_error_str("std")
-                batch[key] = (batch[key] - mean) / (std + 1e-8)
+                std = torch.clamp(std, min=_STD_FLOOR)
+                batch[key] = (batch[key] - mean) / std
             elif norm_mode is NormalizationMode.MIN_MAX:
                 min = buffer["min"]
                 max = buffer["max"]
@@ -242,6 +255,7 @@ class Unnormalize(nn.Module):
                 std = buffer["std"]
                 assert not torch.isinf(mean).any(), _no_stats_error_str("mean")
                 assert not torch.isinf(std).any(), _no_stats_error_str("std")
+                std = torch.clamp(std, min=_STD_FLOOR)
                 batch[key] = batch[key] * std + mean
             elif norm_mode is NormalizationMode.MIN_MAX:
                 min = buffer["min"]

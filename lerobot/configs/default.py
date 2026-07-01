@@ -43,6 +43,14 @@ class DatasetConfig:
     # the chunk window) and must return a (mutated or new) item dict.  Useful
     # e.g. to re-anchor a chunk of pelvis-nav actions onto the first frame's anchor.
     item_transform_path: str | None = None
+    # Probability the entire `observation.state` stack is zeroed on a train
+    # batch item.  Forwarded to the item_transform function via partial
+    # (TRAIN dataset only) iff the function's signature accepts a kwarg of
+    # this name -- factory.py uses inspect to detect it.  Test dataset
+    # uses the unbound transform so eval metrics see no augmentation.  >0
+    # only takes effect when item_transform_path points to a transform that
+    # consumes the kwarg (e.g. `reanchor_chunk_keep_state_local_state_dropout`).
+    state_dropout_p: float = 0.0
 
 
 @dataclass

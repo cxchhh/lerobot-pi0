@@ -103,11 +103,28 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
     )
 
+    # Train and test share the same item_transform function, but only the
+    # train dataset receives augmentation kwargs (bound via partial).  This
+    # keeps augmentations like state dropout out of eval metrics while still
+    # letting the test loader run the same chunk reanchor.  Each augmentation
+    # kwarg is a direct field on DatasetConfig (e.g. state_dropout_p) and is
+    # forwarded only when the transform's signature accepts a parameter of
+    # the same name, so transforms that don't consume a given kwarg are not
+    # broken by the field's mere presence on the cfg.
     item_transform = None
+    train_item_transform = None
     if getattr(cfg.dataset, "item_transform_path", None):
         import importlib
+        import inspect
+        from functools import partial
         mod_path, func_name = cfg.dataset.item_transform_path.split(":")
         item_transform = getattr(importlib.import_module(mod_path), func_name)
+        sig_params = inspect.signature(item_transform).parameters
+        kwargs: dict = {}
+        for name in ("state_dropout_p",):
+            if name in sig_params and getattr(cfg.dataset, name, 0.0) != 0.0:
+                kwargs[name] = getattr(cfg.dataset, name)
+        train_item_transform = partial(item_transform, **kwargs) if kwargs else item_transform
 
     if isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
@@ -122,7 +139,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             image_transforms=image_transforms,
             revision=cfg.dataset.revision,
             video_backend=cfg.dataset.video_backend,
-            item_transform=item_transform,
+            item_transform=train_item_transform,
         )
         try:
             test_dataset = LeRobotDataset(

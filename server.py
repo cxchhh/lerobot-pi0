@@ -114,12 +114,25 @@ class ServerPolicy(_base_policy.BasePolicy):
             observation["action_prefix"] = torch.tensor(np.array(obs_dict['action_prefix'])).unsqueeze(0).float().to(self.device)
         if "delay" in obs_dict.keys():
             observation["delay"] = torch.tensor(obs_dict['delay']).unsqueeze(0).to(self.device)
-            print(observation["delay"])
+        if "rtc_prefix_attention_horizon" in obs_dict.keys():
+            observation["rtc_prefix_attention_horizon"] = torch.tensor(
+                obs_dict["rtc_prefix_attention_horizon"]).unsqueeze(0).to(self.device)
+        if "rtc_max_guidance_weight" in obs_dict.keys():
+            observation["rtc_max_guidance_weight"] = torch.tensor(
+                obs_dict["rtc_max_guidance_weight"], dtype=torch.float32).unsqueeze(0).to(self.device)
             
         if obs_dict['reset']:
             self.model.reset()
 
-        action = self.model.get_action_chunk(observation).cpu().numpy()
+        try:
+            action = self.model.get_action_chunk(observation).cpu().numpy()
+        except Exception:
+            import traceback as _tb
+            print("=" * 60, flush=True)
+            print("[server] get_action_chunk failed; full traceback:", flush=True)
+            _tb.print_exc()
+            print("=" * 60, flush=True)
+            raise
         if self.save_attn:
             self._visualize_attention(obs_dict)
         return {"actions": action }
