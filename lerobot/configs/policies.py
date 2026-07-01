@@ -180,19 +180,38 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
         cli_overrides = policy_kwargs.pop("cli_overrides", [])
         # Dispatch to the concrete subclass BEFORE draccus.parse so that
         # subclass-specific CLI overrides (e.g. --policy.train_time_rtc)
-        # are recognized.  Otherwise draccus would parse args against the
-        # base class and reject unknown subclass fields.
+        # are recognized.  We also strip the "type" meta-key from the
+        # JSON (it's a ChoiceRegistry marker, not a dataclass field of
+        # the subclass) and write a stripped copy for draccus.
         parse_cls = cls
+        parse_file = config_file
+        _tmp_stripped = None
         try:
             import json as _json
+            import tempfile as _tempfile
             with open(config_file) as _cf:
                 _cfg_dict = _json.load(_cf)
-            _type_name = _cfg_dict.get("type")
+            _type_name = _cfg_dict.pop("type", None)
             if _type_name is not None and cls is PreTrainedConfig:
                 _choices = cls.get_known_choices()
                 if _type_name in _choices:
                     parse_cls = _choices[_type_name]
+            if _type_name is not None:
+                _tmp_stripped = _tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", delete=False
+                )
+                _json.dump(_cfg_dict, _tmp_stripped)
+                _tmp_stripped.close()
+                parse_file = _tmp_stripped.name
         except Exception:
-            pass
-        with draccus.config_type("json"):
-            return draccus.parse(parse_cls, config_file, args=cli_overrides)
+            parse_cls = cls
+            parse_file = config_file
+        try:
+            with draccus.config_type("json"):
+                return draccus.parse(parse_cls, parse_file, args=cli_overrides)
+        finally:
+            if _tmp_stripped is not None:
+                try:
+                    os.unlink(_tmp_stripped.name)
+                except OSError:
+                    pass
