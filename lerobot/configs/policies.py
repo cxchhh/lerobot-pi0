@@ -178,5 +178,21 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
         # HACK: this is very ugly, ideally we'd like to be able to do that natively with draccus
         # something like --policy.path (in addition to --policy.type)
         cli_overrides = policy_kwargs.pop("cli_overrides", [])
+        # Dispatch to the concrete subclass BEFORE draccus.parse so that
+        # subclass-specific CLI overrides (e.g. --policy.train_time_rtc)
+        # are recognized.  Otherwise draccus would parse args against the
+        # base class and reject unknown subclass fields.
+        parse_cls = cls
+        try:
+            import json as _json
+            with open(config_file) as _cf:
+                _cfg_dict = _json.load(_cf)
+            _type_name = _cfg_dict.get("type")
+            if _type_name is not None and cls is PreTrainedConfig:
+                _choices = cls.get_known_choices()
+                if _type_name in _choices:
+                    parse_cls = _choices[_type_name]
+        except Exception:
+            pass
         with draccus.config_type("json"):
-            return draccus.parse(cls, config_file, args=cli_overrides)
+            return draccus.parse(parse_cls, config_file, args=cli_overrides)
