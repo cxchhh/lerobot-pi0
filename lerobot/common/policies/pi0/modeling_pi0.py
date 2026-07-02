@@ -806,21 +806,25 @@ class PI0FlowMatching(nn.Module):
     def random_prefix_mask(self, x: torch.Tensor) -> torch.Tensor:
         """Training-time RTC prefix sampler (arXiv:2512.05964 §3).
 
-        Sample d ~ U(0, floor(T * max_prefix_frac) + 1) per batch
-        element.  Positions [0, d) are the prefix (mask=0, treated as
-        already-committed clean actions); [d, T) is the suffix (mask=1,
-        trained under flow matching).  d=0 recovers the original no-
-        prefix training objective, so this is a strict generalization.
+        Two-stage sampling per batch element:
+          1) With probability `train_time_rtc_prefix_drop_p`, FORCE d=0
+             (no prefix — model must plan from scratch using obs alone,
+             CFG-style dropout).
+          2) Otherwise sample d ~ U(0, floor(T * max_prefix_frac) + 1).
 
-        The paper's constraint d <= H - s (where s = stride between
-        sparse frames) corresponds to max_prefix_frac up to
-        (H - s) / H = 1 - s/H.  For pi0 H = chunk_size, s = 1 sparse
-        step so the bound is nearly 1.0; we default to 0.5 for a
-        conservative training distribution.
+        Positions [0, d) are the prefix (mask=0, treated as already-
+        committed clean actions); [d, T) is the suffix (mask=1, trained
+        under flow matching).  d=0 recovers the standard no-prefix flow
+        matching objective, so any d distribution is a strict generalization.
+
+        The paper's constraint d <= H - s (s = stride between sparse
+        frames) corresponds to max_prefix_frac up to (H - s) / H = 1 - s/H.
+        For pi0 H = chunk_size, s = 1 sparse step so the bound is nearly 1.0.
         """
         B, T, _ = x.shape
         device = x.device
         max_frac = float(getattr(self.config, "train_time_rtc_max_prefix_frac", 0.5))
+        drop_p = float(getattr(self.config, "train_time_rtc_prefix_drop_p", 0.0))
         max_prefix = max(0, min(T - 1, int(T * max_frac)))
         prefix_lens = torch.randint(
             low=0,
@@ -828,6 +832,12 @@ class PI0FlowMatching(nn.Module):
             size=(B,),
             device=device,
         )
+        if drop_p > 0.0:
+            # Bernoulli(drop_p): true → force d=0 (no prefix).
+            drop_mask = torch.rand(B, device=device) < drop_p
+            prefix_lens = torch.where(
+                drop_mask, torch.zeros_like(prefix_lens), prefix_lens,
+            )
         t_idx = torch.arange(T, device=device)[None, :]        # (1, T)
         mask_suffix = (t_idx >= prefix_lens[:, None]).float()  # (B, T)
         return mask_suffix.unsqueeze(-1)                       # (B, T, 1)

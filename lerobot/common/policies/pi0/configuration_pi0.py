@@ -78,6 +78,14 @@ class PI0Config(PreTrainedConfig):
     """Upper bound on prefix length as a fraction of chunk (paper's
     d <= H - s constraint; 0.5 means d ∈ [0, chunk_size//2]).  Raise
     toward 1.0 if you expect large real-world inference delays."""
+    train_time_rtc_prefix_drop_p: float = 0.0
+    """Per-batch-element probability of FORCING d=0 (no prefix), on top
+    of the uniform sample from [0, max_prefix].  Classifier-free-guidance-
+    style dropout: makes sure the model can still plan from scratch when
+    prefix is missing, so at inference it uses obs (images/state) rather
+    than over-conditioning on the trailing chunk.  Directly counters the
+    "prefix memorization / background trajectory" failure mode.  Typical
+    0.2-0.3."""
 
     # Attention utils
     use_cache: bool = True
