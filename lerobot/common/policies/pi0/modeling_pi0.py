@@ -907,25 +907,50 @@ class PI0FlowMatching(nn.Module):
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         use_rtc = action_prefix is not None
+        # Training-time RTC (arXiv:2512.05964): if the model was trained
+        # with train_time_rtc, the correct inference is prefix conditioning
+        # via per-position clean signal, NOT ΠGDM inpainting.  Set
+        # time[:, :d] = 0 and never advance x_t[:, :d] — the prefix stays
+        # bit-for-bit clean.  Bypasses the expensive _denoise_step_rtc
+        # backward pass.
+        use_train_time_rtc = (
+            use_rtc
+            and getattr(self.config, "train_time_rtc", False)
+        )
+        if use_train_time_rtc:
+            prefix_len = action_prefix.shape[1]
+            x_t = x_t.clone()
+            x_t[:, :prefix_len] = action_prefix
 
         while time >= -dt / 2:
             # 与 PI `realtime_action` / 论文一致：整段 chunk 共用同一流时间 τ（标量 `time` 扩到每步）。
             # 切勿对 prefix 单独设 τ=0：训练时全程为同一 τ，混用 τ 会 OOD，suffix 速度场易塌成 ~0。
             expanded_time = time.expand(bsize, n_act)
 
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
-                action_prefix=action_prefix if use_rtc else None,
-                rtc_inference_delay=rtc_inference_delay,
-                rtc_prefix_attention_horizon=rtc_prefix_attention_horizon,
-                rtc_max_guidance_weight=rtc_max_guidance_weight,
-            )
-
-            x_t = x_t + dt * v_t
+            if use_train_time_rtc:
+                # Match training: prefix positions carry time=0, suffix
+                # carries the flow-matching timestep.  No ΠGDM.
+                expanded_time = expanded_time.clone()
+                expanded_time[:, :prefix_len] = 0.0
+                v_t = self._denoise_step_base(
+                    state, prefix_pad_masks, past_key_values, x_t, expanded_time,
+                )
+                # Keep prefix pinned; only advance suffix.
+                x_t = x_t.clone()
+                x_t[:, prefix_len:] = x_t[:, prefix_len:] + dt * v_t[:, prefix_len:]
+            else:
+                v_t = self.denoise_step(
+                    state,
+                    prefix_pad_masks,
+                    past_key_values,
+                    x_t,
+                    expanded_time,
+                    action_prefix=action_prefix if use_rtc else None,
+                    rtc_inference_delay=rtc_inference_delay,
+                    rtc_prefix_attention_horizon=rtc_prefix_attention_horizon,
+                    rtc_max_guidance_weight=rtc_max_guidance_weight,
+                )
+                x_t = x_t + dt * v_t
             time = time + dt
         return x_t
 
