@@ -23,6 +23,14 @@ Transforms, picked via DatasetConfig.item_transform_path:
       phase from EE relative motion without needing absolute pelvis
       displacement (which v1.6 conveyed implicitly via the reproject).
 
+      v1.11: additionally FILLS action[:, 39:42] with each frame's pelvis
+      SE(2) displacement (dx, dy, dyaw) from chunk[0], expressed in
+      chunk[0]'s pelvis-nav.  Assemble writes 0 into those cols; this
+      transform derives the values from observation.anchor_pose so the
+      model can learn pelvis motion in the same reference frame as EE.
+      Deploy uses the predicted SE(2) to chain chunk anchors without any
+      external localization.
+
   chunk_transforms:project_world_action_to_self_pelvis_nav
       bfm-v1.3 layout.  action[t,:36] is ref EE in WORLD; projects each
       frame to its own pelvis-nav (nav(t)).  Pelvis velocity (last 3 dims)
@@ -404,6 +412,15 @@ def reanchor_chunk_keep_state_local(item: dict) -> dict:
         cols 36:38 (= sim foot stance at that frame)
       * post-transform stats over state look like raw per-row stats
         (no chunk-anchor drift) so std is naturally tight without recompute
+
+    v1.11: additionally fill action[:, 39:42] with each frame's pelvis
+    SE(2) displacement from chunk[0] EXPRESSED IN chunk[0]'s pelvis-nav.
+      cols 39,40 : (dx, dy) = R_z(-yaw_0) @ (pel_xy_h - pel_xy_0)
+      col  41    :  dyaw    = wrap_to_pi(yaw_h - yaw_0)
+    Assemble writes 0 into these cols; this transform overrides them so the
+    model learns pelvis motion in the SAME frame as EE, letting deploy
+    reanchor future chunks purely from the model's own predictions with no
+    external localization.
     """
     action = item["action"]
     anchor = item["observation.anchor_pose"]
@@ -429,6 +446,23 @@ def reanchor_chunk_keep_state_local(item: dict) -> dict:
     )
     new_action = action.clone()
     new_action[:, :36] = torch.cat([ee_pos_cur, ee_rot6d_cur], dim=-1).reshape(H_action, 36)
+
+    # v1.11: fill pelvis SE(2) cols 39:42 in chunk[0]-nav.
+    # For row h: (dx_h, dy_h) = R_z(-cur_yaw) @ (pel_xy_h - cur_pel_xy).
+    # R_z(-cur_yaw) applied to a vector v is [[c,s],[-s,c]] @ v with
+    # c = cos(cur_yaw), s = sin(cur_yaw) -- i.e. the world->chunk[0]-nav
+    # rotation `_R2_from_yaw(cur_yaw)`.  Reuse that helper.
+    if action.shape[1] >= 42:
+        R_w2n_cur = _R2_from_yaw(cur_yaw)                    # (2, 2)
+        dxy_world = pel_xy_chunk - cur_pel_xy                # (H, 2)
+        dxy_nav = torch.einsum("ij,hj->hi", R_w2n_cur, dxy_world)
+        dyaw = yaw_chunk - cur_yaw
+        # Wrap dyaw to [-pi, pi] so the regression target has no 2*pi jumps.
+        import math as _math
+        dyaw = torch.atan2(torch.sin(dyaw), torch.cos(dyaw))
+        pelvis_se2 = torch.stack([dxy_nav[:, 0], dxy_nav[:, 1], dyaw], dim=-1)
+        new_action[:, 39:42] = pelvis_se2
+
     item["action"] = new_action
     # observation.state passes through unmodified.
     return item
