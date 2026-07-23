@@ -57,6 +57,14 @@ _TRT_PRECISION = _pop_kv(sys.argv, "--trt-precision", "bf16")
 _TRT_RTC_MODE = _pop_kv(sys.argv, "--trt-rtc-mode", "torch")
 _TRT_CACHE_DIR = _pop_kv(sys.argv, "--trt-cache-dir", None)
 _TRT_DEBUG = _pop_bool(sys.argv, "--trt-debug")
+# --trt-mode picks which engine to actually use once TRT is on:
+#   diff-only  (default) — vlm stays in torch (bit-exact KV), diffusion on TRT.
+#                          Best precision, only ~7ms slower than full.
+#   full       — both vlm and diffusion on TRT. Fastest, but vlm KV bf16 kernel
+#                differences propagate through attention and hurt precision.
+#   vlm-only   — vlm on TRT, diffusion in torch. Rarely useful (vlm alone is
+#                <5ms, barely any speedup).
+_TRT_MODE = _pop_kv(sys.argv, "--trt-mode", "diff-only")
 
 def process_img(img):
     img = torch.from_numpy(img)
@@ -75,6 +83,11 @@ class ServerPolicy(_base_policy.BasePolicy):
         self._expert = model.model.paligemma_with_expert
         self._expert._save_attn = save_attn
         self._attn_step = 0
+        # Rolling window of end-to-end infer() wall time (ms). Every 20 calls
+        # we print mean / p50 / p95 so a running rollout shows the current
+        # latency without needing to kill the server.
+        from collections import deque as _deque
+        self._infer_times = _deque(maxlen=200)
 
     def _visualize_attention(self, obs_dict):
         attn = getattr(self._expert, '_attn_probs', None)
@@ -135,6 +148,9 @@ class ServerPolicy(_base_policy.BasePolicy):
         self._expert._attn_layer_idx = 0
 
     def infer(self, obs_dict: Dict) -> Dict:
+        import time as _time
+        _t0 = _time.perf_counter()
+
         qpos = obs_dict['observation.state']
         observation = dict()
         observation['observation.state'] = torch.tensor(np.array(qpos)).unsqueeze(0).float().to(self.device)
@@ -145,20 +161,27 @@ class ServerPolicy(_base_policy.BasePolicy):
         observation["task_index"] = torch.tensor(0).unsqueeze(0).to(self.device)
         if "action_prefix" in obs_dict.keys():
             observation["action_prefix"] = torch.tensor(np.array(obs_dict['action_prefix'])).unsqueeze(0).float().to(self.device)
+        # Scalar knobs stay on CPU. They're only consumed via `.item()` inside
+        # get_action_chunk, and pushing them to GPU forces a stream sync each
+        # time (~5-10 ms per `.item()` on cuda tensors). Keeping them CPU makes
+        # `.item()` a cheap python read.
         if "delay" in obs_dict.keys():
-            observation["delay"] = torch.tensor(obs_dict['delay']).unsqueeze(0).to(self.device)
+            observation["delay"] = torch.tensor(obs_dict['delay']).unsqueeze(0)
         if "rtc_prefix_attention_horizon" in obs_dict.keys():
             observation["rtc_prefix_attention_horizon"] = torch.tensor(
-                obs_dict["rtc_prefix_attention_horizon"]).unsqueeze(0).to(self.device)
+                obs_dict["rtc_prefix_attention_horizon"]).unsqueeze(0)
         if "rtc_max_guidance_weight" in obs_dict.keys():
             observation["rtc_max_guidance_weight"] = torch.tensor(
-                obs_dict["rtc_max_guidance_weight"], dtype=torch.float32).unsqueeze(0).to(self.device)
-            
+                obs_dict["rtc_max_guidance_weight"], dtype=torch.float32).unsqueeze(0)
+
         if obs_dict['reset']:
             self.model.reset()
 
+        torch.cuda.synchronize()
+        _t_preproc = _time.perf_counter()
+
         try:
-            action = self.model.get_action_chunk(observation).cpu().numpy()
+            action_gpu = self.model.get_action_chunk(observation)
         except Exception:
             import traceback as _tb
             print("=" * 60, flush=True)
@@ -166,8 +189,40 @@ class ServerPolicy(_base_policy.BasePolicy):
             _tb.print_exc()
             print("=" * 60, flush=True)
             raise
+
+        torch.cuda.synchronize()
+        _t_model = _time.perf_counter()
+
+        action = action_gpu.cpu().numpy()
+
         if self.save_attn:
             self._visualize_attention(obs_dict)
+
+        _t_end = _time.perf_counter()
+        _dt_ms = (_t_end - _t0) * 1000.0
+        preproc_ms = (_t_preproc - _t0) * 1000.0
+        model_ms = (_t_model - _t_preproc) * 1000.0
+        d2h_ms = (_t_end - _t_model) * 1000.0
+
+        self._infer_times.append((_dt_ms, preproc_ms, model_ms, d2h_ms))
+        if len(self._infer_times) % 20 == 0:
+            def _stats(vs):
+                s = sorted(vs); n = len(s)
+                return sum(s) / n, s[n // 2], s[min(n - 1, int(n * 0.95))]
+            totals = [x[0] for x in self._infer_times]
+            pre = [x[1] for x in self._infer_times]
+            mdl = [x[2] for x in self._infer_times]
+            d2h = [x[3] for x in self._infer_times]
+            n = len(totals)
+            m_t, p50_t, p95_t = _stats(totals)
+            m_pre, p50_pre, _ = _stats(pre)
+            m_mdl, p50_mdl, _ = _stats(mdl)
+            m_d2h, p50_d2h, _ = _stats(d2h)
+            print(
+                f"[infer] n={n} total mean={m_t:5.1f}/p50={p50_t:5.1f}/p95={p95_t:5.1f}ms  "
+                f"[preproc {m_pre:4.1f}ms | model {m_mdl:5.1f}ms | d2h {m_d2h:4.1f}ms]",
+                flush=True,
+            )
         return {"actions": action }
 
     def on_disconnect(self):
@@ -210,7 +265,7 @@ def main_wrapper(cfg: TrainPipelineConfig):
         )
         logging.info(colored(
             f"[trt] enabling TRT backend: precision={_TRT_PRECISION} "
-            f"rtc_mode={_TRT_RTC_MODE} debug={_TRT_DEBUG} cache={ckpt_dir}",
+            f"mode={_TRT_MODE} rtc_mode={_TRT_RTC_MODE} debug={_TRT_DEBUG} cache={ckpt_dir}",
             "cyan", attrs=["bold"],
         ))
         backend = PI0TRTBackend(
@@ -222,7 +277,15 @@ def main_wrapper(cfg: TrainPipelineConfig):
         )
         network.model.trt_backend = backend
         network.model.trt_rtc_mode = _TRT_RTC_MODE
-        logging.info(colored("[trt] backend attached; base and RTC-if-supported paths go through TRT.", "green"))
+        if _TRT_MODE == "diff-only":
+            network.model.trt_diffusion_only = True
+        elif _TRT_MODE == "vlm-only":
+            network.model.trt_vlm_only = True
+        elif _TRT_MODE == "full":
+            pass
+        else:
+            raise ValueError(f"Unknown --trt-mode {_TRT_MODE!r}; expected diff-only / full / vlm-only")
+        logging.info(colored(f"[trt] backend attached (mode={_TRT_MODE}).", "green"))
 
     save_attn = os.environ.get("SAVE_ATTN", "0") == "1"
     policy = ServerPolicy(model=network, device=cfg.policy.device, save_attn=save_attn)

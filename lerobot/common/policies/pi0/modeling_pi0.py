@@ -365,6 +365,13 @@ class PI0Policy(PreTrainedPolicy):
         max_w = 1.0
         if "rtc_max_guidance_weight" in batch.keys():
             max_w = float(batch["rtc_max_guidance_weight"].reshape(-1)[0].item())
+        import os as _os
+        _dbg = _os.environ.get("PI0_DEBUG_TIMING") == "1"
+        if _dbg:
+            import time as _time
+            torch.cuda.synchronize()
+            _t_a = _time.perf_counter()
+
         if "action_prefix" in batch.keys():
             # Stage 1: copy raw client action_prefix into batch[ACTION]
             # so that normalize_targets can apply mean/std before we use it
@@ -384,7 +391,10 @@ class PI0Policy(PreTrainedPolicy):
         action_prefix = batch.get("action_prefix", None)
         if action_prefix is not None:
             action_prefix = self.prepare_action(batch)
-        
+
+        if _dbg:
+            torch.cuda.synchronize()
+            _t_b = _time.perf_counter()
 
         actions = self.model.sample_actions(
             images, img_masks, lang_tokens, lang_masks, state, noise=None, action_prefix=action_prefix,
@@ -392,6 +402,10 @@ class PI0Policy(PreTrainedPolicy):
             rtc_prefix_attention_horizon=attn_horizon,
             rtc_max_guidance_weight=max_w,
         )
+
+        if _dbg:
+            torch.cuda.synchronize()
+            _t_c = _time.perf_counter()
 
         # Unpad actions
         original_action_dim = self.config.action_feature.shape[0]
@@ -402,6 +416,20 @@ class PI0Policy(PreTrainedPolicy):
 
         if self.config.adapt_to_pi_aloha:
             actions = self._pi_aloha_encode_actions(actions)
+
+        if _dbg:
+            torch.cuda.synchronize()
+            _t_d = _time.perf_counter()
+            if not hasattr(self, "_gac_timings"):
+                from collections import deque as _dq
+                self._gac_timings = _dq(maxlen=200)
+            self._gac_timings.append((_t_b - _t_a, _t_c - _t_b, _t_d - _t_c))
+            if len(self._gac_timings) % 20 == 0:
+                n = len(self._gac_timings)
+                pre = sum(x[0] for x in self._gac_timings) / n * 1000
+                sam = sum(x[1] for x in self._gac_timings) / n * 1000
+                pos = sum(x[2] for x in self._gac_timings) / n * 1000
+                print(f"[get_action_chunk] mean prep={pre:5.2f}ms | sample={sam:5.2f}ms | post={pos:5.2f}ms  (n={n})", flush=True)
         return actions.squeeze(0)
 
     def forward(self, batch: dict[str, Tensor], noise=None, time=None) -> tuple[Tensor, dict[str, Tensor]]:
@@ -911,11 +939,14 @@ class PI0FlowMatching(nn.Module):
                     for i in range(num_layers)
                 ], dim=0)
 
+        # Keep `dt` and `time` as python floats — using cuda scalar tensors
+        # here forces a stream sync at every `while time >= -dt / 2` iteration
+        # (~2 ms per iter × 10 iters = ~20 ms wasted). Broadcasting a python
+        # float with a cuda tensor still runs on GPU, just without the sync.
         dt = -1.0 / self.config.num_steps
-        dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
         x_t = noise
-        time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        time = 1.0
         use_rtc = action_prefix is not None
         # Training-time RTC (arXiv:2512.05964): if the model was trained
         # with train_time_rtc, the correct inference is prefix conditioning
@@ -935,7 +966,7 @@ class PI0FlowMatching(nn.Module):
         while time >= -dt / 2:
             # 与 PI `realtime_action` / 论文一致：整段 chunk 共用同一流时间 τ（标量 `time` 扩到每步）。
             # 切勿对 prefix 单独设 τ=0：训练时全程为同一 τ，混用 τ 会 OOD，suffix 速度场易塌成 ~0。
-            expanded_time = time.expand(bsize, n_act)
+            expanded_time = torch.full((bsize, n_act), time, device=device, dtype=torch.float32)
 
             if use_train_time_rtc:
                 # Match training: prefix positions carry time=0, suffix

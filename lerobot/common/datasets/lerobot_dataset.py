@@ -882,10 +882,15 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.tolerance_s,
         )
 
-        video_files = list(self.root.rglob("*.mp4"))
+        # Scope the sanity globs to the canonical subdirs — a recursive
+        # glob over the whole root also counts FOREIGN artifacts nested
+        # inside it (e.g. locomanip's test split lives at
+        # <root>/test/<tag>/ and its mp4/parquet files made these
+        # asserts fire on every train save after the first test episode).
+        video_files = list((self.root / "videos").rglob("*.mp4"))
         assert len(video_files) == self.num_episodes * len(self.meta.video_keys)
 
-        parquet_files = list(self.root.rglob("*.parquet"))
+        parquet_files = list((self.root / "data").rglob("*.parquet"))
         assert len(parquet_files) == self.num_episodes
 
         # delete images

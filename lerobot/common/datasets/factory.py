@@ -125,6 +125,16 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             if name in sig_params and getattr(cfg.dataset, name, 0.0) != 0.0:
                 kwargs[name] = getattr(cfg.dataset, name)
         train_item_transform = partial(item_transform, **kwargs) if kwargs else item_transform
+        # state_dropout_p >= 1.0 is DETERMINISTIC (state always zeroed),
+        # i.e. the deploy configuration (--state_ablation zero) — apply it
+        # to the test/val loader too, so val loss evaluates the same input
+        # distribution the model trains and deploys on.  Feeding REAL
+        # states to a model trained on 100% zeroed states is OOD and makes
+        # val loss rise monotonically as training progresses (observed
+        # bfm-v2.7, 2026-07-16).  p < 1 stays train-only: stochastic
+        # dropout in eval would only add val-loss noise.
+        if float(kwargs.get("state_dropout_p", 0.0)) >= 1.0:
+            item_transform = train_item_transform
 
     if isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
@@ -142,9 +152,17 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             item_transform=train_item_transform,
         )
         try:
+            # Test split lives as a SIBLING of the train root ("<root>-test",
+            # locomanip parallel_record layout since 2026-07-15): a nested
+            # "<root>/test/<tag>" gets rglob-ed into the train dataset and
+            # corrupts its episode/timestamp maps.  Fall back to the legacy
+            # nested layout for older datasets (<= bfm-v2.6).
+            _test_root = Path(str(cfg.dataset.root).rstrip("/") + "-test")
+            if not (_test_root / "meta" / "info.json").exists():
+                _test_root = Path(cfg.dataset.root) / "test" / cfg.dataset.repo_id.split("/")[-1]
             test_dataset = LeRobotDataset(
                 cfg.dataset.repo_id,
-                root=Path(cfg.dataset.root) / "test" / cfg.dataset.repo_id.split("/")[-1],
+                root=_test_root,
                 episodes=cfg.dataset.episodes,
                 delta_timestamps=delta_timestamps,
                 image_transforms=image_transforms,

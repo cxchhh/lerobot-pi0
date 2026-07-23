@@ -149,7 +149,15 @@ def _dummy_diffusion_inputs(flow, prefix_len: int, device: str) -> tuple:
     kv_heads = flow.paligemma_with_expert.paligemma.config.text_config.num_key_value_heads
     head_dim = flow.paligemma_with_expert.paligemma.config.text_config.head_dim
     n_act = flow.config.n_action_steps
-    state = torch.zeros(1, flow.config.max_state_dim, dtype=torch.float32, device=device)
+    # State can be (1, D) or (1, T_state, D) depending on n_obs_states. Client
+    # `play_vla_infer.py` defaults to n_obs_states=2, but checkpoint config
+    # may say more — allow explicit override via env var. If not overridden,
+    # fall back to config value.
+    n_obs_states = int(os.environ.get("PI0_TRT_N_OBS_STATES", getattr(flow.config, "n_obs_states", 1)))
+    if n_obs_states <= 1:
+        state = torch.zeros(1, flow.config.max_state_dim, dtype=torch.float32, device=device)
+    else:
+        state = torch.zeros(1, n_obs_states, flow.config.max_state_dim, dtype=torch.float32, device=device)
     x_t = torch.zeros(1, n_act, flow.config.max_action_dim, dtype=torch.float32, device=device)
     timestep = torch.ones(1, n_act, dtype=torch.float32, device=device)
     past_kv = torch.zeros(n_layers, 2, 1, prefix_len, kv_heads, head_dim, dtype=torch.bfloat16, device=device)
@@ -235,6 +243,9 @@ class _EngineRunner:
         self.engine = engine
         self.context = engine.create_execution_context()
         self.input_names = input_names
+        # Cache expected input rank/shape from the engine so we can produce a
+        # meaningful error before TRT logs a raw C++ nbDims mismatch.
+        self.expected_input_shapes = {n: tuple(engine.get_tensor_shape(n)) for n in input_names}
         # Pre-allocate outputs
         self.outputs: dict[str, torch.Tensor] = {}
         for name, dtype in output_dtypes.items():
@@ -247,11 +258,24 @@ class _EngineRunner:
         # Set input tensors + addresses
         for name in self.input_names:
             t = inputs[name].contiguous()
-            self.context.set_input_shape(name, tuple(t.shape))
+            actual = tuple(t.shape)
+            expected = self.expected_input_shapes[name]
+            if len(actual) != len(expected):
+                raise RuntimeError(
+                    f"[trt] input {name!r} rank mismatch: got shape {actual} (rank {len(actual)}), "
+                    f"engine expects rank {len(expected)} shape {expected}. "
+                    "Something upstream is producing a differently-shaped tensor than what "
+                    "was recorded at engine build time."
+                )
+            self.context.set_input_shape(name, actual)
             self.context.set_tensor_address(name, int(t.data_ptr()))
         for name, out in self.outputs.items():
             self.context.set_tensor_address(name, int(out.data_ptr()))
-        # Execute on our stream, then sync
+        # NB: TRT logs a "default stream" perf warning here. Attempts to use a
+        # dedicated non-default stream + cross-stream waits regressed rollout
+        # quality (subtle sync/read ordering issues), so we stick with the
+        # default stream + explicit sync — warning is cosmetic, output is
+        # correct.
         stream_handle = torch.cuda.current_stream().cuda_stream
         ok = self.context.execute_async_v3(stream_handle)
         if not ok:
@@ -309,6 +333,11 @@ class PI0TRTBackend:
         self.n_act = cfg.n_action_steps
         self.max_state_dim = cfg.max_state_dim
         self.max_action_dim = cfg.max_action_dim
+        # State history: n_obs_states from the ckpt config, but env var wins so
+        # the client-actual value can be baked in (`PI0_TRT_N_OBS_STATES`).
+        self.n_obs_states = int(os.environ.get(
+            "PI0_TRT_N_OBS_STATES", getattr(cfg, "n_obs_states", 1)
+        ))
         # prefix_len is 2*num_image_tokens + tokenizer_max_length (batch=1, 2 cams)
         self.prefix_len = 2 * text_cfg.num_image_tokens + cfg.tokenizer_max_length
 
@@ -329,8 +358,10 @@ class PI0TRTBackend:
             "lang_tokens": [1, self.flow.config.tokenizer_max_length],
             "lang_masks": [1, self.flow.config.tokenizer_max_length],
         }
+        state_shape = ([1, self.max_state_dim] if self.n_obs_states <= 1
+                       else [1, self.n_obs_states, self.max_state_dim])
         info.diffusion_input_shapes = {
-            "state": [1, self.max_state_dim],
+            "state": state_shape,
             "x_t": [1, self.n_act, self.max_action_dim],
             "timestep": [1, self.n_act],
             "past_kv": [self.n_layers, 2, 1, self.prefix_len, self.kv_heads, self.head_dim],
@@ -376,18 +407,20 @@ class PI0TRTBackend:
             _build_engine(onnx_path, plan_path, self.precision)
             _sweep()
 
-        if rebuild or not plan_p.exists():
+        if rebuild["vlm"] or not plan_p.exists():
+            # If we're rebuilding because of a spec change, the old onnx is
+            # invalid too — force re-export.
             _build_one(
-                need_export=(rebuild or not plan_p.exists() and not onnx_p.exists()) or rebuild,
+                need_export=(rebuild["vlm"] or not onnx_p.exists()),
                 exporter=self._export_prefill,
                 onnx_path=onnx_p,
                 plan_path=plan_p,
             )
             # Persist immediately so a later failure doesn't invalidate this plan.
             self._save_build_info(info)
-        if rebuild or not plan_d.exists():
+        if rebuild["diffusion"] or not plan_d.exists():
             _build_one(
-                need_export=(rebuild or not onnx_d.exists()),
+                need_export=(rebuild["diffusion"] or not onnx_d.exists()),
                 exporter=self._export_diffusion,
                 onnx_path=onnx_d,
                 plan_path=plan_d,
@@ -399,9 +432,9 @@ class PI0TRTBackend:
         bwd_ok = False
         if self.rtc_mode in ("split", "tensorrt-only"):
             try:
-                if rebuild or not plan_b.exists():
+                if rebuild["diffusion"] or not plan_b.exists():
                     _build_one(
-                        need_export=(rebuild or not onnx_b.exists()),
+                        need_export=(rebuild["diffusion"] or not onnx_b.exists()),
                         exporter=self._export_diffusion_bwd,
                         onnx_path=onnx_b,
                         plan_path=plan_b,
@@ -457,22 +490,34 @@ class PI0TRTBackend:
         # Persist build info
         self._save_build_info(info)
 
-    def _check_and_rebuild(self, info: BuildInfo) -> bool:
+    def _check_and_rebuild(self, info: BuildInfo) -> dict:
+        """Returns per-engine rebuild flags: {'vlm': bool, 'diffusion': bool}."""
         info_path = self.cache_dir / "build_info.json"
         if not info_path.exists():
-            # Missing build_info can also mean a prior build got killed after
-            # some plans were written. Treat cache as valid if no plans exist
-            # at all (fresh install) or if we can't verify — only rebuild when
-            # the file is present AND signature mismatches.
-            return False
+            return {"vlm": False, "diffusion": False}
         try:
             existing = BuildInfo(**json.loads(info_path.read_text()))
         except Exception:
-            return True
-        matches = info.matches(existing)
-        if not matches:
-            log.warning("[trt] build_info mismatch — will rebuild engines.")
-        return not matches
+            return {"vlm": True, "diffusion": True}
+        # Common metadata (torch/trt/gpu/precision) mismatch invalidates everything.
+        common_bad = (
+            info.torch_version != existing.torch_version
+            or info.trt_version != existing.trt_version
+            or info.gpu_name != existing.gpu_name
+            or info.precision != existing.precision
+        )
+        if common_bad:
+            log.warning("[trt] torch/trt/gpu/precision mismatch — rebuild all engines.")
+            return {"vlm": True, "diffusion": True}
+        rebuild = {
+            "vlm": info.prefill_input_shapes != existing.prefill_input_shapes,
+            "diffusion": info.diffusion_input_shapes != existing.diffusion_input_shapes,
+        }
+        if rebuild["vlm"]:
+            log.warning("[trt] vlm input shapes changed — will rebuild vlm engine.")
+        if rebuild["diffusion"]:
+            log.warning("[trt] diffusion input shapes changed — will rebuild diffusion engine.")
+        return rebuild
 
     def _save_build_info(self, info: BuildInfo):
         (self.cache_dir / "build_info.json").write_text(json.dumps(asdict(info), indent=2))
@@ -569,7 +614,8 @@ class PI0TRTBackend:
         images = [img_head * 2.0 - 1.0, img_right * 2.0 - 1.0]  # match prepare_images output
         img_masks = [torch.ones(1, dtype=torch.bool, device=self.device),
                      torch.ones(1, dtype=torch.bool, device=self.device)]
-        state = torch.randn(1, self.max_state_dim, device=self.device)
+        state = (torch.randn(1, self.max_state_dim, device=self.device) if self.n_obs_states <= 1
+                 else torch.randn(1, self.n_obs_states, self.max_state_dim, device=self.device))
         lang_tokens = torch.zeros(1, L, dtype=torch.int64, device=self.device)
         lang_masks = torch.ones(1, L, dtype=torch.bool, device=self.device)
 
