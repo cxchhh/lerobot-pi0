@@ -30,6 +30,9 @@ class NormalizationMode(str, Enum):
     MIN_MAX = "MIN_MAX"
     MEAN_STD = "MEAN_STD"
     IDENTITY = "IDENTITY"
+    # Map to [-1, 1] using the 1st/99th percentiles instead of min/max, so that
+    # outliers don't squash the useful range. Used by pi0.5.
+    QUANTILES = "QUANTILES"
 
 
 class DictLike(Protocol):

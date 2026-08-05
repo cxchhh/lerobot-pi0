@@ -66,13 +66,17 @@ _TRT_DEBUG = _pop_bool(sys.argv, "--trt-debug")
 #                <5ms, barely any speedup).
 _TRT_MODE = _pop_kv(sys.argv, "--trt-mode", "diff-only")
 
-def process_img(img):
-    img = torch.from_numpy(img)
+def process_img(img, device="cpu"):
+    # Upload the uint8 tensor first, then convert on-device: the H2D copy is
+    # 1/4 the bytes of shipping float32 across PCIe.
+    img = torch.from_numpy(img).to(device, non_blocking=True)
     if img.ndim == 3 or img.ndim == 4 and img.shape[0] != 1:
         img = img.unsqueeze(0)
     img = einops.rearrange(img, "... h w c -> ... c h w").contiguous()
     img = img.type(torch.float32)
-    img /= 255
+    # 0-dim tensor divisor: CUDA's tensor/scalar path multiplies by the
+    # reciprocal (1 ULP off vs CPU `/ 255`); tensor/tensor stays bit-exact.
+    img /= img.new_full((), 255.0)
     return img
 
 class ServerPolicy(_base_policy.BasePolicy):
@@ -156,7 +160,7 @@ class ServerPolicy(_base_policy.BasePolicy):
         observation['observation.state'] = torch.tensor(np.array(qpos)).unsqueeze(0).float().to(self.device)
         for key in obs_dict:
             if "images" in key:
-                observation[key] = process_img(np.array(obs_dict[key])).to(self.device)
+                observation[key] = process_img(np.array(obs_dict[key]), self.device)
         observation['task'] = [obs_dict['task']]
         observation["task_index"] = torch.tensor(0).unsqueeze(0).to(self.device)
         if "action_prefix" in obs_dict.keys():
@@ -289,7 +293,18 @@ def main_wrapper(cfg: TrainPipelineConfig):
 
     save_attn = os.environ.get("SAVE_ATTN", "0") == "1"
     policy = ServerPolicy(model=network, device=cfg.policy.device, save_attn=save_attn)
-    policy_server = WebsocketPolicyServer(policy=policy, host=HOST, port=PORT)
+    # sonic-latent 消融 ckpt（action=78=token64+双手14）：首帧 metadata 自报
+    # 后端身份，locomanip run_sim.sh 的 probe 据此自动换 --tracker sonic +
+    # --vla-backend pi0_sonic。42/40 维常规 ckpt 不带 metadata（现状不变）。
+    _action_dim = int(cfg.policy.action_feature.shape[0])
+    _metadata = None
+    if _action_dim == 78:
+        _metadata = {"backend": "pi0_sonic", "action_dim": 78,
+                     "chunk_size": int(cfg.policy.chunk_size)}
+        logging.info(f"[sonic] latent ckpt detected: metadata={_metadata}")
+    policy_server = WebsocketPolicyServer(
+        policy=policy, host=HOST, port=PORT,
+        **({"metadata": _metadata} if _metadata else {}))
     print(f"Starting server on {HOST}:{PORT}")
     try:
         policy_server.serve_forever()

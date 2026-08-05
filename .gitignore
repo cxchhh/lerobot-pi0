@@ -183,3 +183,5 @@ sim/
 run*.sh
 pretrained_model
 lerobot_data/
+lerobot_dataset/
+swanlog/

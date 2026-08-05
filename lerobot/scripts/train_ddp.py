@@ -15,6 +15,8 @@ from torch.amp import GradScaler
 from torch.utils.data import random_split, DataLoader
 import tqdm
 import swanlab
+# 关闭周期性硬件监控：它每 10s 轮询所有 GPU，遇到故障卡会刷屏 NVMLError_NotSupported
+swanlab.merge_settings({"probe": {"monitor": False}})
 swanlab.sync_wandb(wandb_run=False)
 
 from lerobot.common.datasets.factory import make_dataset

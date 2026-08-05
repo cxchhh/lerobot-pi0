@@ -500,7 +500,16 @@ class PI0Policy(PreTrainedPolicy):
             img = batch[key]
 
             if self.config.resize_imgs_with_padding is not None:
-                img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0)
+                if getattr(self.config, "resize_imgs_stretch", False):
+                    # de-letterbox：满像素拉伸（无补边）。tuple 语义是
+                    # (width, height)（resize_with_pad 的参数序），
+                    # F.interpolate 要 (h, w)。
+                    _w, _h = self.config.resize_imgs_with_padding
+                    img = F.interpolate(
+                        img, size=(_h, _w), mode="bilinear",
+                        align_corners=False)
+                else:
+                    img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0)
 
             # Normalize from range [0,1] to [-1,1] as expected by siglip
             img = img * 2.0 - 1.0

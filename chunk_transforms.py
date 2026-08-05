@@ -447,12 +447,27 @@ def reanchor_chunk_keep_state_local(item: dict) -> dict:
     new_action = action.clone()
     new_action[:, :36] = torch.cat([ee_pos_cur, ee_rot6d_cur], dim=-1).reshape(H_action, 36)
 
-    # v1.11: fill pelvis SE(2) cols 39:42 in chunk[0]-nav.
+    # Fill pelvis SE(2) cols in chunk[0]-nav.  Column layout by width:
+    # 42 = v1.11 (contacts@36:38, grip@38, SE2@39:42);
+    # 40 = v1.4 (contact cols cut, grip@36, SE2@37:40);
+    # 39 = pre-v1.11 (no SE2 cols) -> nothing to fill.
+    # Unknown widths must RAISE, not skip: a silent skip leaves the all-zero
+    # write-time placeholder as the training target (the old `>= 42` guard
+    # trained teleop-v1.4's SE2 head to a constant 0).  New layouts must be
+    # added here AND in the sibling copy (locomanip src <-> lerobot root).
     # For row h: (dx_h, dy_h) = R_z(-cur_yaw) @ (pel_xy_h - cur_pel_xy).
     # R_z(-cur_yaw) applied to a vector v is [[c,s],[-s,c]] @ v with
     # c = cos(cur_yaw), s = sin(cur_yaw) -- i.e. the world->chunk[0]-nav
     # rotation `_R2_from_yaw(cur_yaw)`.  Reuse that helper.
-    if action.shape[1] >= 42:
+    _SE2_SLICES = {42: slice(39, 42), 40: slice(37, 40), 39: None}
+    if action.shape[1] not in _SE2_SLICES:
+        raise ValueError(
+            f"reanchor_chunk_keep_state_local: unknown action width "
+            f"{action.shape[1]} (known: 42=v1.11, 40=v1.4, 39=pre-v1.11); "
+            f"refusing to silently skip the SE2 fill"
+        )
+    _se2 = _SE2_SLICES[action.shape[1]]
+    if _se2 is not None:
         R_w2n_cur = _R2_from_yaw(cur_yaw)                    # (2, 2)
         dxy_world = pel_xy_chunk - cur_pel_xy                # (H, 2)
         dxy_nav = torch.einsum("ij,hj->hi", R_w2n_cur, dxy_world)
@@ -461,7 +476,7 @@ def reanchor_chunk_keep_state_local(item: dict) -> dict:
         import math as _math
         dyaw = torch.atan2(torch.sin(dyaw), torch.cos(dyaw))
         pelvis_se2 = torch.stack([dxy_nav[:, 0], dxy_nav[:, 1], dyaw], dim=-1)
-        new_action[:, 39:42] = pelvis_se2
+        new_action[:, _se2] = pelvis_se2
 
     item["action"] = new_action
     # observation.state passes through unmodified.
@@ -492,6 +507,23 @@ def reanchor_chunk_keep_state_local_state_dropout(
     inference is unaffected regardless of config.
     """
     item = reanchor_chunk_keep_state_local(item)
+    if state_dropout_p > 0.0 and torch.rand(()).item() < state_dropout_p:
+        item["observation.state"] = torch.zeros_like(item["observation.state"])
+    return item
+
+
+def state_dropout_only(
+    item: dict,
+    state_dropout_p: float = 0.0,
+) -> dict:
+    """GR00T-parity state dropout for LATENT-action datasets
+    (teleop-v1.2-sonic): NO reanchor — the EE reanchor transform would
+    scramble latent dims 0:36 (it treats action[:, :36] as EE poses).
+
+    GR00T's finetune trains with state_dropout_prob=0.2; this mirrors it:
+        item_transform_path: "chunk_transforms:state_dropout_only"
+        state_dropout_p: 0.2
+    """
     if state_dropout_p > 0.0 and torch.rand(()).item() < state_dropout_p:
         item["observation.state"] = torch.zeros_like(item["observation.state"])
     return item

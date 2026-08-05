@@ -46,6 +46,11 @@ class PI0Config(PreTrainedConfig):
 
     # Image preprocessing
     resize_imgs_with_padding: tuple[int, int] = (224, 224)
+    resize_imgs_stretch: bool = False
+    """De-letterbox（2026-08-04 视觉通道消融）：直接拉伸到目标尺寸，不做
+    等比缩放+补边。358x224 经 letterbox 只剩 224x140 有效像素（四成预算
+    喂了黑边）；拉伸用满 224^2（信息量 x1.6），代价是纵横比失真——训练与
+    部署共用本 flag（随 ckpt config.json 走）即自洽。"""
 
     # Add empty images. Used by pi0_aloha_sim which adds the empty
     # left and right wrist cameras in addition to the top camera.

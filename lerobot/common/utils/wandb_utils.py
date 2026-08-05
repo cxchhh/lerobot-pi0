@@ -39,6 +39,14 @@ def cfg_to_group(cfg: TrainPipelineConfig, return_list: bool = False) -> list[st
     return lst if return_list else "-".join(lst)
 
 
+def fit_tag(tag: str, limit: int = 20) -> str:
+    """swanlab rejects tags longer than 20 chars. Drop the "key:" prefix, then the
+    head, so the distinguishing tail (e.g. the dataset name) survives."""
+    if len(tag) <= limit:
+        return tag
+    return tag.split(":", 1)[-1][-limit:]
+
+
 def get_wandb_run_id_from_filesystem(log_dir: Path) -> str:
     # Get the WandB run ID.
     paths = glob(str(log_dir / "wandb/latest-run/run-*"))
@@ -83,7 +91,7 @@ class WandBLogger:
             entity=self.cfg.entity,
             name=self.job_name,
             notes=self.cfg.notes,
-            tags=cfg_to_group(cfg, return_list=True),
+            tags=[fit_tag(t) for t in cfg_to_group(cfg, return_list=True)],
             dir=self.log_dir,
             config=cfg.to_dict(),
             # TODO(rcadene): try set to True

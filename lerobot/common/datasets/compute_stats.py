@@ -17,6 +17,10 @@ import numpy as np
 
 from lerobot.common.datasets.utils import load_image_as_numpy
 
+# Optional per-feature stats written by `scripts/augment_dataset_quantile_stats.py`,
+# required by policies using `NormalizationMode.QUANTILES` (pi0.5).
+QUANTILE_KEYS = ("q01", "q99")
+
 
 def estimate_num_samples(
     dataset_len: int, min_num_samples: int = 100, max_num_samples: int = 10_000, power: float = 0.75
@@ -143,13 +147,25 @@ def aggregate_feature_stats(stats_ft_list: list[dict[str, dict]]) -> dict[str, d
     weighted_variances = (variances + delta_means**2) * counts
     total_variance = weighted_variances.sum(axis=0) / total_count
 
-    return {
+    aggregated = {
         "min": np.min(np.stack([s["min"] for s in stats_ft_list]), axis=0),
         "max": np.max(np.stack([s["max"] for s in stats_ft_list]), axis=0),
         "mean": total_mean,
         "std": np.sqrt(total_variance),
         "count": total_count,
     }
+
+    # Quantiles (used by pi0.5's QUANTILES normalization) are only present on
+    # datasets that went through `augment_dataset_quantile_stats.py`. They can't
+    # be combined exactly, so average them by count — which is exact in the
+    # common case where that script wrote the same dataset-wide value into every
+    # episode.
+    for qkey in QUANTILE_KEYS:
+        if all(qkey in s for s in stats_ft_list):
+            quantiles = np.stack([s[qkey] for s in stats_ft_list])
+            aggregated[qkey] = (quantiles * counts).sum(axis=0) / total_count
+
+    return aggregated
 
 
 def aggregate_stats(stats_list: list[dict[str, dict]]) -> dict[str, dict[str, np.ndarray]]:
