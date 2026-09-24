@@ -449,6 +449,7 @@ def reanchor_chunk_keep_state_local(item: dict) -> dict:
 
     # Fill pelvis SE(2) cols in chunk[0]-nav.  Column layout by width:
     # 42 = v1.11 (contacts@36:38, grip@38, SE2@39:42);
+    # 41 = bimanual (r_grip@36, l_grip@37, SE2@38:41; teleop-guizi-v1);
     # 40 = v1.4 (contact cols cut, grip@36, SE2@37:40);
     # 39 = pre-v1.11 (no SE2 cols) -> nothing to fill.
     # Unknown widths must RAISE, not skip: a silent skip leaves the all-zero
@@ -459,11 +460,13 @@ def reanchor_chunk_keep_state_local(item: dict) -> dict:
     # R_z(-cur_yaw) applied to a vector v is [[c,s],[-s,c]] @ v with
     # c = cos(cur_yaw), s = sin(cur_yaw) -- i.e. the world->chunk[0]-nav
     # rotation `_R2_from_yaw(cur_yaw)`.  Reuse that helper.
-    _SE2_SLICES = {42: slice(39, 42), 40: slice(37, 40), 39: None}
+    _SE2_SLICES = {42: slice(39, 42), 41: slice(38, 41), 40: slice(37, 40),
+                   39: None}
     if action.shape[1] not in _SE2_SLICES:
         raise ValueError(
             f"reanchor_chunk_keep_state_local: unknown action width "
-            f"{action.shape[1]} (known: 42=v1.11, 40=v1.4, 39=pre-v1.11); "
+            f"{action.shape[1]} (known: 42=v1.11, 41=bimanual, 40=v1.4, "
+            f"39=pre-v1.11); "
             f"refusing to silently skip the SE2 fill"
         )
     _se2 = _SE2_SLICES[action.shape[1]]
